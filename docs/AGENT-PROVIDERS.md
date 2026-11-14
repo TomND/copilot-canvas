@@ -32,7 +32,7 @@ follow-ups, notes, todos), plus the canvas skills (`canvas-events`,
 | Passive run | `copilot --session-id ID -p PROMPT --allow-all --no-ask-user` | `opencode run PROMPT [-s ses_…] --auto -m MODEL` | `claude -p PROMPT --session-id/-r ID --dangerously-skip-permissions` |
 | Canvas skills of a canvas-wide agent | another `--plugin-dir <agent>/plugin` (Copilot takes the option several times) | `<agent>/plugin/skills` added to `skills.paths` in `OPENCODE_CONFIG_CONTENT` | another `--plugin-dir <agent>/plugin` (`.claude-plugin/plugin.json`; repeatable) |
 | Group skill folders | another `--plugin-dir <home>/group-skills/<instance>/<group>/<n>-<terminal>` | that folder's `skills` added to `skills.paths` | another `--plugin-dir` (the same folder) |
-| History | `~/.copilot/session-state/<id>/events.jsonl` (tailed) | `~/.local/share/opencode/opencode.db` (SQLite, read-only, indexed lookups only) | `~/.claude/projects/<dir>/<id>.jsonl` (tailed) |
+| History | `~/.copilot/session-state/<id>/events.jsonl` (tailed; under `COPILOT_HOME` when set) | `~/.local/share/opencode/opencode.db` (SQLite, read-only, indexed lookups only) | `~/.claude/projects/<dir>/<id>.jsonl` (tailed) |
 | Live state | OSC 9;4 progress; `inuse.<pid>.lock` | the TUI's own HTTP server (busy, permission prompts, questions) | `~/.claude/sessions/<pid>.json` (busy / idle / waiting) |
 
 Stopping a session sends Ctrl+D (Copilot CLI's *Shutdown*) at once and again

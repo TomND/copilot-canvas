@@ -26,7 +26,7 @@ impl Instance {
         };
         let sessions_dir = match sessions_dir {
             Some(path) => path,
-            None => dirs::home_dir().context("cannot determine the home directory")?.join(".copilot").join("session-state"),
+            None => default_sessions_dir(&dirs::home_dir().context("cannot determine the home directory")?, std::env::var_os("COPILOT_HOME")),
         };
         std::fs::create_dir_all(&home).with_context(|| format!("cannot create {}", home.display()))?;
         Ok(Self { name, home: absolute(&home), sessions_dir: absolute(&sessions_dir) })
@@ -108,6 +108,16 @@ impl Instance {
 
     pub fn bin_dir(&self) -> PathBuf {
         self.home.join("bin")
+    }
+}
+
+/// Copilot's session history when no folder is given (`--sessions-dir`):
+/// `<COPILOT_HOME>/session-state` when `COPILOT_HOME` is set and not empty
+/// (Copilot keeps its state there), else `~/.copilot/session-state` (S5-10).
+pub fn default_sessions_dir(user: &Path, copilot_home: Option<std::ffi::OsString>) -> PathBuf {
+    match copilot_home.filter(|home| !home.is_empty()) {
+        Some(home) => PathBuf::from(home).join("session-state"),
+        None => user.join(".copilot").join("session-state"),
     }
 }
 
@@ -333,6 +343,18 @@ mod tests {
         let b = Instance::new(Some("t1".into()), Some(temp.join("b")), Some(temp.clone())).unwrap();
         assert_ne!(a.pipe_name(), b.pipe_name());
         assert!(Instance::new(Some("bad name".into()), Some(temp.join("c")), None).is_err());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn copilots_history_is_under_copilot_home_unless_a_folder_is_given() {
+        let user = Path::new("/u");
+        assert_eq!(default_sessions_dir(user, None), user.join(".copilot").join("session-state"));
+        assert_eq!(default_sessions_dir(user, Some("".into())), user.join(".copilot").join("session-state"), "set but empty: the default");
+        assert_eq!(default_sessions_dir(user, Some("/data/copilot".into())), PathBuf::from("/data/copilot").join("session-state"));
+        let temp = std::env::temp_dir().join(format!("cc-sessions-{}", uuid::Uuid::new_v4()));
+        let given = Instance::new(Some("t".into()), Some(temp.join("h")), Some(temp.join("given"))).unwrap();
+        assert_eq!(given.sessions_dir, absolute(&temp.join("given")), "a folder given (--sessions-dir) wins");
         std::fs::remove_dir_all(temp).unwrap();
     }
 

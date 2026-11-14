@@ -69,7 +69,7 @@ lives:
 |---|---|---|
 | `--instance NAME` | `default` | 1-40 characters of `[A-Za-z0-9_-]`; names the service and its files |
 | `--home DIR` | `ATELIER_HOME`, else `~/.atelier` | the data folder (created if missing) |
-| `--sessions-dir DIR` | `~/.copilot/session-state` | Copilot's history the index reads |
+| `--sessions-dir DIR` | `<COPILOT_HOME>/session-state` (`~/.copilot` when `COPILOT_HOME` is not set) | Copilot's history the index reads |
 
 The service's pipe is `\\.\pipe\atelier-<user>-<instance>-<hash>`,
 where the hash is taken from the lower-cased home path

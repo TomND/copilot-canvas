@@ -302,7 +302,7 @@ AUTOMATIONS (scheduled tasks defined by manifests; folder: --dir, ATELIER_AUTOMA
 OPTIONS
   --instance NAME      separate service + canvas namespace (default: default)
   --home DIR           data directory (default: ~/.atelier, or ATELIER_HOME)
-  --sessions-dir DIR   Copilot session history to index (default: ~/.copilot/session-state)
+  --sessions-dir DIR   Copilot session history to index (default: $COPILOT_HOME/session-state, ~/.copilot/session-state)
   --canvas FILE        canvas file (default: <home>/canvas.json; with --remote, a path on the service's machine;
                        `todo export`: the JSON Canvas file it writes)
   --cwd DIR            default folder for new sessions (default: current folder)
