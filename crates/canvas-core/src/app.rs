@@ -31,6 +31,9 @@ const PREFS_FLUSH: Duration = Duration::from_millis(400);
 /// A session whose box's terminal ended here and whose summary still says
 /// live this long after, unchanged, is taken as no longer live (R2-D-03).
 pub const LIVE_DOUBT: Duration = Duration::from_secs(5);
+/// A launch refused because the box's own previous run is still closing is
+/// sent again once, this long after (R2-D-10).
+pub const CLOSING_RETRY: Duration = Duration::from_millis(2500);
 
 pub enum AppEvent {
     Git { req: u64, folder: String, result: Result<Option<GitInfo>, String> },
@@ -291,6 +294,11 @@ pub struct App {
     pub terms: HashMap<String, TermInfo>,
     pub views: HashMap<String, TermView>,
     pub launching: HashMap<String, Instant>,
+    /// Boxes whose launch was refused because their own previous run is
+    /// still closing: when it goes again ([`CLOSING_RETRY`]) …
+    pub closing_retry: HashMap<String, Instant>,
+    /// … and those sent again already (a second such refusal is shown).
+    pub closing_retried: HashSet<String>,
     pub preparing: HashSet<String>,
     pub node_errors: HashMap<String, String>,
     pub pending_prompts: HashMap<String, String>,
@@ -511,6 +519,8 @@ impl App {
             terms: HashMap::new(),
             views: HashMap::new(),
             launching: HashMap::new(),
+            closing_retry: HashMap::new(),
+            closing_retried: HashSet::new(),
             preparing: HashSet::new(),
             node_errors: HashMap::new(),
             pending_prompts: HashMap::new(),
@@ -1778,6 +1788,8 @@ impl App {
     /// Starts a session box's terminal (see `interact.rs` for what may call it).
     pub fn launch(&mut self, id: &str) {
         let Some(node) = self.doc.node(id).cloned() else { return };
+        self.closing_retry.remove(id);
+        self.closing_retried.remove(id);
         let cwd = node
             .cwd
             .clone()
@@ -2034,6 +2046,16 @@ impl App {
         self.launching.remove(id);
         // A resumed child that may not start goes again (with its own notice).
         if self.launch_refused(id, message) {
+            return;
+        }
+        // Its own previous run still closing (Enter right after it exited):
+        // started again once in a moment, preparing meanwhile, never shown as
+        // open elsewhere (R2-D-10).
+        if is_own_closing(message) && !self.closing_retried.contains(id) && self.doc.node(id).is_some() {
+            self.closing_retry.insert(id.to_owned(), Instant::now() + CLOSING_RETRY);
+            self.launching.insert(id.to_owned(), Instant::now());
+            let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_default();
+            self.notify(format!("“{name}”: its previous run is still closing; starting it again in a moment."), false);
             return;
         }
         let reason = launch_reason(message);
@@ -2400,6 +2422,24 @@ impl App {
         }
     }
 
+    /// Launches refused while the box's own previous run was closing go
+    /// again once their moment came (tiles and the keyboard stay where they are).
+    fn retry_closing(&mut self) {
+        let now = Instant::now();
+        let due: Vec<String> = self.closing_retry.iter().filter(|(_, at)| now >= **at).map(|(id, _)| id.clone()).collect();
+        for id in due {
+            self.closing_retry.remove(&id);
+            self.launching.remove(&id);
+            if !self.connected || self.owned_alive(&id) || self.doc.node(&id).is_none() {
+                continue;
+            }
+            let (slots, focused, focus) = (self.tile_slots.clone(), self.focused_term.clone(), self.focus);
+            self.launch(&id);
+            (self.tile_slots, self.focused_term, self.focus) = (slots, focused, focus);
+            self.closing_retried.insert(id);
+        }
+    }
+
     pub fn on_tick(&mut self) {
         // Spinner frame: one step per 80 ms regardless of the housekeeping rate.
         static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -2409,6 +2449,9 @@ impl App {
         self.note_heard();
         if !self.live_doubted.is_empty() {
             self.settle_doubts();
+        }
+        if !self.closing_retry.is_empty() {
+            self.retry_closing();
         }
         if self.dirty_at.is_some_and(|t| t.elapsed() >= DOC_FLUSH) {
             self.flush_doc();
@@ -2518,10 +2561,18 @@ pub fn launch_reason(message: &str) -> String {
 }
 
 /// The service refused a launch because the session already runs (another
-/// terminal, VS Code, another box): "open elsewhere", not a failure.
+/// terminal, VS Code, another box): "open elsewhere", not a failure. The
+/// box's own previous run still closing is not elsewhere.
 pub fn is_open_elsewhere(reason: &str) -> bool {
     let reason = reason.to_lowercase();
-    ["already running", "running elsewhere", "open elsewhere", "open in another", "running in another", "running inside"].iter().any(|p| reason.contains(p))
+    !is_own_closing(&reason) && ["already running", "running elsewhere", "open elsewhere", "open in another", "running in another", "running inside"].iter().any(|p| reason.contains(p))
+}
+
+/// The service refused a launch because the box's own previous run is still
+/// closing: "still closing in this box's own terminal …" (this build), "already
+/// running in this box's own terminal, which is still closing …" (a4bf57f).
+pub fn is_own_closing(reason: &str) -> bool {
+    reason.to_lowercase().contains("this box's own terminal")
 }
 
 /// Client-side frame statistics (`--perf`).

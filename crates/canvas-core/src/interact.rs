@@ -259,6 +259,35 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_refused_while_its_own_run_closes_goes_again_once() {
+        let mut a = node("12345678-1234-1234-1234-123456789abc", false);
+        a.fresh = false;
+        let id = a.id.clone();
+        let (mut app, sent) = app(vec![a]);
+        let status = |app: &App| app.node_status(app.doc.node(&id).unwrap());
+        for text in [
+            "still closing in this box's own terminal (copilot.exe pid 4242): try again in a few seconds",
+            "this session is already running in this box's own terminal, which is still closing (copilot.exe pid 4242): try again in a few seconds",
+        ] {
+            app.start_node(&id);
+            assert_eq!(launches(&sent), std::slice::from_ref(&id));
+            app.on_service(crate::protocol::ServiceMsg::Error { id: Some(id.clone()), message: text.into() });
+            assert_eq!(status(&app), crate::status::Status::Preparing, "closing, not open elsewhere: {text}");
+            app.on_tick();
+            assert!(launches(&sent).is_empty(), "not at once");
+            *app.closing_retry.get_mut(&id).unwrap() -= crate::app::CLOSING_RETRY;
+            app.on_tick();
+            assert_eq!(launches(&sent), std::slice::from_ref(&id), "once, a moment later");
+            // Refused again: shown, as a failure with the reason, not retried.
+            app.on_service(crate::protocol::ServiceMsg::Error { id: Some(id.clone()), message: text.into() });
+            assert_eq!(status(&app), crate::status::Status::Failed);
+            assert!(app.subtitle(app.doc.node(&id).unwrap()).contains("own terminal"));
+            app.on_tick();
+            assert!(launches(&sent).is_empty() && app.closing_retry.is_empty());
+        }
+    }
+
+    #[test]
     fn resume_needs_a_conversation_and_exited_terminals_give_way_to_details() {
         let mut copilot = node("12345678-1234-1234-1234-123456789abc", false);
         copilot.fresh = false;
