@@ -232,6 +232,10 @@ struct Inner {
     stops: HashSet<String>,
     /// Resumed agents waiting to settle.
     pending: HashMap<String, Pending>,
+    /// Entries whose launch by the restore is under way, and those of them
+    /// cancelled meanwhile (stopped as soon as the launch is done: R3-B-04).
+    starting: HashSet<String>,
+    cancelled: HashSet<String>,
     view: Option<RestoreView>,
     /// Notes for the bus loop to queue (front of the mailbox).
     notes: Vec<Mail>,
@@ -430,11 +434,38 @@ impl Restore {
         }
         inner.set.entries.remove(id);
         inner.dirty = true;
+        // Its launch by the restore is under way: what it starts is stopped (R3-B-04).
+        if inner.starting.contains(id) {
+            inner.cancelled.insert(id.to_owned());
+        }
         if let Some(view) = inner.view.as_mut() {
             view.resuming.retain(|r| r != id);
             view.interrupted.push(RestoreSkip { id: id.to_owned(), why: why.to_owned() });
         }
         true
+    }
+
+    /// The restore begins launching `id`.
+    fn launching(&self, id: &str) {
+        let mut inner = lock(&self.inner);
+        inner.starting.insert(id.to_owned());
+        inner.cancelled.remove(id);
+    }
+
+    /// The restore's launch of `id` is done; answers whether it was
+    /// cancelled meanwhile (then what it started is stopped, gets no note,
+    /// and is not recorded again).
+    fn launched(&self, id: &str) -> bool {
+        let mut inner = lock(&self.inner);
+        inner.starting.remove(id);
+        let cancelled = inner.cancelled.remove(id);
+        if cancelled {
+            inner.requests.remove(id);
+            if inner.set.entries.remove(id).is_some() {
+                inner.dirty = true;
+            }
+        }
+        cancelled
     }
 }
 
@@ -447,9 +478,14 @@ pub(super) fn action(shared: &Shared, value: &serde_json::Value) -> bool {
     }
     if value["op"].as_str() == Some("cancel")
         && let Some(id) = value["id"].as_str()
-        && shared.restore.cancel(id, "stopped before its turn")
     {
-        log(&shared.instance, &format!("restore: {id} stopped before its turn; not resumed"));
+        if shared.restore.cancel(id, "stopped before its turn") {
+            log(&shared.instance, &format!("restore: {id} stopped before its turn; not resumed"));
+        } else if shared.restore.holds(id) {
+            // Resumed just before the window's Stop came (it still showed it waiting): stopped (R3-B-04).
+            log(&shared.instance, &format!("restore: {id} was stopped right after it was resumed"));
+            let _ = shared.host.stop_terminal(id, false);
+        }
     }
     true
 }
@@ -791,7 +827,17 @@ fn restore_one(shared: &Shared, entry: &Entry, began: u64) -> Outcome {
         return Outcome::Skipped("a VM box (its VM keeps it)".into());
     }
     let Some(launch) = relaunch(&entry.launch, Some(&entry.native)) else { return Outcome::Skipped("not restorable".into()) };
-    match shared.launch(id, launch, &entry.cwd, entry.cols.clamp(20, 1000), entry.rows.clamp(5, 500)) {
+    shared.restore.launching(id);
+    let launched = shared.launch(id, launch, &entry.cwd, entry.cols.clamp(20, 1000), entry.rows.clamp(5, 500));
+    // Stopped (or removed) while it was being launched: what started is stopped, with no note (R3-B-04).
+    if shared.restore.launched(id) {
+        log(&shared.instance, &format!("restore: {id} was stopped while it was being resumed; stopping what started"));
+        if launched.is_ok() {
+            let _ = shared.host.stop_terminal(id, false);
+        }
+        return Outcome::Gone;
+    }
+    match launched {
         Ok(()) => {
             let note = agent.is_some() && !entry.doing.idle();
             let what = match agent {
@@ -1183,6 +1229,31 @@ mod tests {
         let view = r.view().unwrap();
         assert_eq!((view.resuming, view.interrupted.iter().map(|s| (s.id.as_str(), s.why.as_str())).collect::<Vec<_>>()), (vec!["a".to_owned()], vec![("b", "removed from the canvas before its turn")]));
         assert!(!r.cancel("b", "again"), "once");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// R3-B-04: a box stopped while the restore itself launches it is
+    /// stopped once the launch is done (no note, not recorded again).
+    #[test]
+    fn a_box_stopped_while_the_restore_launches_it_is_stopped_after_the_launch() {
+        let home = home();
+        let r = Restore::new(&home, "default");
+        lock(&r.inner).view = Some(RestoreView { resuming: vec!["a".into(), "b".into()], ..Default::default() });
+        for id in ["a", "b"] {
+            lock(&r.inner).set.entries.insert(id.into(), entry(id, true, 1));
+        }
+        // Its launch is under way (resolving, spawning) when the Stop comes.
+        r.launching("a");
+        r.requested("a", &LaunchKind::Copilot { new_name: None, prompt: None, resume: true }, "/w");
+        assert!(r.cancel("a", "stopped before its turn"));
+        assert!(r.launched("a"), "the launch finds it cancelled: what started is stopped");
+        assert!(!lock(&r.inner).requests.contains_key("a"), "not recorded again from its launch request");
+        assert!(!r.holds("a"), "no note for it");
+        assert!(r.entries().iter().all(|e| e.id != "a"));
+        // A launch nobody cancelled is kept.
+        r.launching("b");
+        assert!(!r.launched("b"));
+        assert!(r.entries().iter().any(|e| e.id == "b"));
         let _ = std::fs::remove_dir_all(home);
     }
 

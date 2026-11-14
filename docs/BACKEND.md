@@ -555,7 +555,9 @@ a canvas box, VS Code, or a program and its pid) as the reason. A client's
 `Stop` of a box with nothing running and no launch under way (one waiting
 for its turn) reaches the backend as the bus request `{"action": "restore",
 "op": "cancel", "id"}` instead of a "no terminal" error (`server::dispatch`,
-R2-C-01). A resumed agent that was busy gets its note
+R2-C-01); one stopped while the restore itself launches it is stopped as
+soon as that launch is done (no note, not recorded again), and a cancel that
+finds the box just resumed stops it (R3-B-04). A resumed agent that was busy gets its note
 once it has run 6 s and been quiet 2 s: a `Mail` with no sender (typed as
 written, `bus::mail_text`) put first in the mailbox by the bus loop
 (`take_notes`); other mail for it waits until then (`holds`). The bus's

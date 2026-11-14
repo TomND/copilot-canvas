@@ -337,7 +337,8 @@ what it was running, with no window needed:
   restart**; one you start yourself meanwhile is simply left running (a busy
   one still gets its note), and one you remove from the canvas (or stop:
   *Stop session*, `X`, its details' Stop) before its turn is not resumed and
-  leaves the running set. A session that is live
+  leaves the running set (also when its turn had just come: it is stopped as
+  soon as it starts, and gets no note). A session that is live
   elsewhere (often the previous service's program still closing) is checked
   again every 2 s for 30 s, then left alone with who has it (a canvas box, VS
   Code, or another program with its pid); one whose launch is now refused (its
