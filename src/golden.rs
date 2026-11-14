@@ -785,6 +785,12 @@ fn visual_shots(shots: &mut Shots) -> Result<()> {
         let gui = sb.start(&["--canvas", &canvas.display().to_string()], "gui-golden-visuals.log")?;
         let mut ui = gui.driver;
         ui.wait("the visuals canvas", Duration::from_secs(30), |t| t.contains("Visual group"))?;
+        // The automations group is added once the window first asks the
+        // service for its automations (a fresh canvas has none yet), before
+        // the view is fitted: the shot never catches the canvas half loaded.
+        // A window asks at once when it opens; e125ca1's windows asked a
+        // minute later, which made this shot miss the group (CI on e125ca1).
+        wait_tree(&ui, "the automations group", 90, |t| t["canvas"]["boxes"].as_array().is_some_and(|b| b.iter().filter(|b| b["prefix"] == "◷ ").count() == 3))?;
         ui.request(json!({ "cmd": "freeze", "tick": 0 }))?;
         ui.send(b"\x1b")?;
         ui.send(b"f")?;
