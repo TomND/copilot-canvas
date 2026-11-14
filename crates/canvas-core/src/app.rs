@@ -73,6 +73,7 @@ pub enum Focus {
 pub use crate::undo::Undo;
 pub use canvas_termview::{TermSelection, TermView, user_message_rows};
 
+#[derive(Clone, Debug)]
 pub struct Notice {
     pub text: String,
     pub error: bool,
@@ -85,6 +86,45 @@ pub struct LiveDoubt {
     pub box_id: String,
     pub since: Instant,
     pub summary: SessionSummary,
+}
+
+/// Box removals the last run kept ([`App::held_removals`]).
+#[derive(Debug)]
+pub struct HeldRemovals {
+    pub kept: Vec<crate::sync::Kept>,
+    /// When the last run kept them (kept again at quit with this time).
+    pub saved_ms: u64,
+    /// The service's terminal list came on this connection.
+    pub terms_in: bool,
+}
+
+/// What became of the changes the last run kept (`App::new`).
+pub struct Restored {
+    pub replayed: crate::sync::Replayed,
+    /// Dropped unread: older than [`crate::prefs::UNSENT_MAX_AGE_MS`].
+    pub stale: usize,
+    /// How long ago they were kept.
+    pub age_ms: u64,
+    pub saved_ms: u64,
+}
+
+/// Replays the changes the last run kept on `doc` (the service's canvas as
+/// it is now): none when they are older than a day.
+pub fn replay_unsent(doc: &mut Doc, unsent: &crate::prefs::Unsent, now_ms: u64) -> Restored {
+    let age_ms = now_ms.saturating_sub(unsent.saved_ms);
+    if age_ms > crate::prefs::UNSENT_MAX_AGE_MS {
+        return Restored { replayed: Default::default(), stale: unsent.kept.len() + unsent.ops.len(), age_ms, saved_ms: unsent.saved_ms };
+    }
+    Restored { replayed: crate::sync::replay(doc, &unsent.kept, &unsent.ops), stale: 0, age_ms, saved_ms: unsent.saved_ms }
+}
+
+/// The first few names of a list, for a notice ("“a”, “b” and 3 more").
+fn some_names(names: &[String]) -> String {
+    let shown = names.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    match names.len() {
+        0..=3 => shown,
+        n => format!("{shown} and {} more", n - 3),
+    }
 }
 
 pub enum Drag {
@@ -259,8 +299,9 @@ pub struct App {
     pub doc_asked_at: Instant,
     /// `DocOpen`s sent on this connection and not answered yet.
     pub docs_asked: u32,
-    /// Changes kept by the last run wait to be sent (their file goes then).
-    pub unsent_pending: bool,
+    /// Box removals kept by the last run, waiting for the service's terminal
+    /// list: made then for boxes that do not run again (R3-C-02).
+    pub held_removals: Option<HeldRemovals>,
     /// How many times the document was asked for again without an answer.
     pub doc_retries: u32,
     /// When local document changes started waiting to be sent.
@@ -469,16 +510,17 @@ impl App {
         let mut doc = opened.doc;
         let mut prefs = prefs.map(PrefsFile::new);
         let mut space = crate::spaces::Space::Canvas;
-        // Canvas changes the last run could not send: on top, sent with the first edit.
-        let mut restored = 0;
+        // Canvas changes the last run could not send: replayed where the canvas
+        // still holds what they were made from, then their file goes (R3-C-02).
+        let mut replayed = None;
         if let Some(file) = prefs.as_mut() {
             let loaded = file.load().unwrap_or_else(|| ClientPrefs::of(&doc));
             space = loaded.space.as_deref().and_then(crate::spaces::Space::parse).unwrap_or_default();
             loaded.apply(&mut doc);
-            if let Some(unsent) = file.load_unsent().filter(|u| u.key == replica.key) {
-                restored = unsent.ops.iter().filter(|op| crate::sync::apply(&mut doc, op).is_ok()).count();
-                if restored == 0 {
-                    file.clear_unsent();
+            if let Some(unsent) = file.load_unsent() {
+                file.clear_unsent();
+                if unsent.key == replica.key {
+                    replayed = Some(replay_unsent(&mut doc, &unsent, now_ms()));
                 }
             }
         }
@@ -519,7 +561,7 @@ impl App {
             doc_resync: false,
             doc_asked_at: Instant::now(),
             docs_asked: 0,
-            unsent_pending: false,
+            held_removals: None,
             doc_retries: 0,
             dirty_at: None,
             prefs_dirty_at: None,
@@ -666,10 +708,8 @@ impl App {
         if refresh {
             app.refresh_backend_info();
         }
-        if restored > 0 {
-            app.unsent_pending = true;
-            app.mark_dirty();
-            app.notify(format!("{restored} canvas change(s) not sent before Atelier closed last time go to the service now."), false);
+        if let Some(replayed) = replayed {
+            app.after_replay(replayed);
         }
         app
     }
@@ -746,21 +786,95 @@ impl App {
 
     /// Canvas changes that cannot go now (offline, waiting for the canvas
     /// again, the service restarting) are kept for the next start instead of
-    /// being lost with this client; those sent but not confirmed while
-    /// offline too (applying one twice changes nothing).
+    /// being lost with this client, with what they were made from (the next
+    /// start replays them only where that still holds); those sent but not
+    /// confirmed while offline too, and removals the last run kept that wait
+    /// for the terminal list. Nothing to keep: no file.
     fn save_unsent(&mut self) {
-        let pending = !self.connected || self.doc_resync || self.restarting.is_some();
-        if !pending || self.replica.key == "detached" {
+        if self.replica.key == "detached" {
             return;
         }
         let Some(file) = &self.prefs else { return };
-        let ops = crate::sync::diff(self.replica.synced(), &self.doc);
-        if ops.is_empty() {
+        let pending = !self.connected || self.doc_resync || self.restarting.is_some();
+        let mut kept = if pending { self.replica.kept(&self.doc) } else { Vec::new() };
+        let mut saved_ms = now_ms();
+        if let Some(held) = &self.held_removals {
+            kept.extend(held.kept.iter().cloned());
+            saved_ms = saved_ms.min(held.saved_ms);
+        }
+        if kept.is_empty() {
+            file.clear_unsent();
             return;
         }
-        let unsent = crate::prefs::Unsent { key: self.replica.key.clone(), saved_ms: now_ms(), ops };
+        let unsent = crate::prefs::Unsent { key: self.replica.key.clone(), saved_ms, kept, ops: Vec::new() };
         if let Err(error) = file.save_unsent(&unsent) {
             self.save_error = Some(format!("cannot keep the canvas changes not sent yet: {error:#}"));
+        }
+    }
+
+    /// The last run's kept changes were replayed (`App::new`): removals wait
+    /// for the terminal list, and a notice says what was restored and what
+    /// was dropped, and why.
+    fn after_replay(&mut self, restored: Restored) {
+        let Restored { replayed, stale, age_ms, saved_ms } = restored;
+        if replayed.applied > 0 {
+            self.mark_dirty();
+        }
+        if !replayed.removals.is_empty() {
+            self.held_removals = Some(HeldRemovals { kept: replayed.removals.clone(), saved_ms, terms_in: false });
+        }
+        let mut parts = Vec::new();
+        if stale > 0 {
+            parts.push(format!("{stale} canvas change(s) kept {} ago were dropped (older than a day)", short_interval(age_ms)));
+        }
+        if replayed.applied > 0 {
+            parts.push(format!("{} canvas change(s) not sent before Atelier closed last time go to the service now", replayed.applied));
+        }
+        if !replayed.changed.is_empty() {
+            parts.push(format!("{} not applied, changed elsewhere since: {}", replayed.changed.len(), some_names(&replayed.changed)));
+        }
+        if !replayed.gone.is_empty() {
+            parts.push(format!("{} not applied, no longer on the canvas: {}", replayed.gone.len(), some_names(&replayed.gone)));
+        }
+        if replayed.unchecked > 0 {
+            parts.push(format!("{} kept by an older version dropped (they could not be checked)", replayed.unchecked));
+        }
+        if !parts.is_empty() {
+            self.notify(format!("{}.", parts.join("; ")), stale + replayed.dropped() > 0);
+        }
+    }
+
+    /// Makes the box removals the last run kept once the service's terminal
+    /// list is in: a box whose session runs again (here, being started, or
+    /// waiting in the restore) or that changed since stays, with its
+    /// subagent boxes; the others go as a removal here does (`remove_nodes`).
+    fn make_held_removals(&mut self) {
+        let Some(held) = self.held_removals.take() else { return };
+        let (mut removed, mut stay) = (0, Vec::new());
+        for kept in &held.kept {
+            let crate::sync::Op::DelNode(id) = &kept.op else { continue };
+            let Some(node) = self.doc.node(id) else { continue };
+            let runs = node.kind == NodeKind::Session
+                && (self.owned_alive(id) || self.launching.contains_key(id) || self.bus.restore.as_ref().is_some_and(|r| r.is_resuming(id)));
+            if runs || serde_json::to_value(node).ok() != kept.base {
+                stay.push(format!("“{}”", node.name));
+                continue;
+            }
+            if node.kind == NodeKind::Session {
+                self.send(ClientMsg::Forget { id: id.clone() });
+                self.tile_slots.retain(|t| t != id);
+            }
+            self.doc.remove_node(id);
+            removed += 1;
+        }
+        if removed > 0 {
+            self.after_remote_change();
+            self.mark_dirty();
+        }
+        match (removed, stay.len()) {
+            (0, 0) => {}
+            (removed, 0) => self.notify(format!("{removed} box removal(s) kept from the last run were made."), false),
+            (removed, kept) => self.notify(format!("{removed} box removal(s) kept from the last run were made; {kept} not, the box runs again or changed since: {}.", some_names(&stay)), true),
         }
     }
 
@@ -780,11 +894,6 @@ impl App {
         if self.conn.tx.try_send(message).is_err() {
             // The edit is lost: start over from the service's document.
             self.request_doc();
-        } else if std::mem::take(&mut self.unsent_pending)
-            && let Some(file) = &self.prefs
-        {
-            // What the last run kept went with it.
-            file.clear_unsent();
         }
     }
 
@@ -2022,6 +2131,9 @@ impl App {
                 for id in ended {
                     self.doubt_live(&id);
                 }
+                if let Some(held) = self.held_removals.as_mut() {
+                    held.terms_in = true;
+                }
                 // A reattaching client restores its tiles from the saved order.
                 if self.tile_slots.is_empty() {
                     let restore: Vec<String> =
@@ -2560,6 +2672,10 @@ impl App {
         if !self.closing_retry.is_empty() {
             self.retry_closing();
         }
+        // Removals the last run kept: once this connection's terminal list is in.
+        if self.held_removals.as_ref().is_some_and(|h| h.terms_in) && self.connected && !self.reconnecting && !self.doc_resync {
+            self.make_held_removals();
+        }
         if self.dirty_at.is_some_and(|t| t.elapsed() >= DOC_FLUSH) {
             self.flush_doc();
         }
@@ -3037,6 +3153,86 @@ mod connection_tests {
         let mut app = app;
         app.save_now();
         assert!(crate::prefs::PrefsFile::new(prefs.clone()).load_unsent().is_none());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn kept_changes_are_checked_against_the_canvas_at_the_next_start_and_their_file_goes() {
+        let home = std::env::temp_dir().join(format!("cc-unsent-{}", uuid::Uuid::new_v4()));
+        let prefs = crate::prefs::PrefsFile::path(&home, "default", "k");
+        let file = || crate::prefs::PrefsFile::new(prefs.clone());
+        let start = |doc: Doc| {
+            let (conn, sent) = detached();
+            let (app_tx, _app_rx) = unbounded();
+            let opened = Opened { key: "k".into(), version: 3, path: String::new(), client: 7, doc };
+            (App::new(conn, Arc::new(crate::rpc::Offline), opened, false, ".".into(), app_tx, Some(prefs.clone())), sent)
+        };
+        let base = Doc { nodes: vec![node("a"), node("b"), node("c")], ..Doc::default() };
+        // Offline: a renamed, b and c (stopped here) removed; then Atelier quits.
+        let (mut app, _sent) = start(base.clone());
+        app.connected = false;
+        app.doc.node_mut("a").unwrap().name = "old".into();
+        app.remove_nodes(&["b".into(), "c".into()]);
+        app.save_now();
+        drop(app);
+        // Since then a was renamed elsewhere, and the phone resumed b.
+        let mut now = base.clone();
+        now.node_mut("a").unwrap().name = "new".into();
+        let (mut app, sent) = start(now);
+        assert_eq!(app.doc.node("a").unwrap().name, "new", "a newer rename is not overwritten");
+        let notice = app.notice.clone().unwrap();
+        assert!(notice.error && notice.text.contains("1 not applied, changed elsewhere since: “new”"), "{}", notice.text);
+        assert!(file().load_unsent().is_none(), "handled: the file goes at once");
+        // The removals wait for the terminal list: a box that runs again stays.
+        assert!(app.doc.node("b").is_some() && app.doc.node("c").is_some());
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "b".into(), alive: true, ..Default::default() }]));
+        app.on_tick();
+        assert!(app.doc.node("b").is_some() && app.doc.node("c").is_none());
+        let forgotten: Vec<String> = sent.try_iter().filter_map(|m| if let ClientMsg::Forget { id } = m { Some(id) } else { None }).collect();
+        assert_eq!(forgotten, ["c"]);
+        let notice = app.notice.clone().unwrap();
+        assert!(notice.text.contains("1 box removal(s) kept from the last run were made; 1 not, the box runs again or changed since: “b”"), "{}", notice.text);
+        assert!(app.held_removals.is_none());
+        drop(app);
+
+        // A change the service had already (sent, not confirmed): nothing to
+        // do, no notice, and the file goes all the same.
+        let (mut app, _sent) = start(base.clone());
+        app.doc.node_mut("a").unwrap().x = 5;
+        app.flush_doc();
+        app.connected = false;
+        app.save_now();
+        assert!(file().load_unsent().is_some_and(|u| u.kept.len() == 1 && u.kept[0].sent));
+        drop(app);
+        let mut now = base.clone();
+        now.node_mut("a").unwrap().x = 5;
+        let (mut app, sent) = start(now);
+        assert!(app.notice.as_ref().is_none_or(|n| !n.text.contains("change")) && file().load_unsent().is_none());
+        app.flush_doc();
+        assert!(edits(&sent).is_empty(), "nothing to send");
+        drop(app);
+
+        // Kept more than a day ago: dropped, and said so.
+        let old = crate::sync::Kept { op: crate::sync::Op::SetField("idle_stop_minutes".into(), serde_json::json!(7)), base: None, sent: false };
+        let saved_ms = now_ms() - crate::prefs::UNSENT_MAX_AGE_MS - 3_600_000;
+        file().save_unsent(&crate::prefs::Unsent { key: "k".into(), saved_ms, kept: vec![old], ops: Vec::new() }).unwrap();
+        let (app, _sent) = start(base.clone());
+        assert_ne!(app.doc.idle_stop_minutes, 7);
+        let notice = app.notice.clone().unwrap();
+        assert!(notice.error && notice.text.contains("1 canvas change(s) kept 1d ago were dropped (older than a day)"), "{}", notice.text);
+        assert!(file().load_unsent().is_none());
+        drop(app);
+
+        // Removals still waiting when Atelier quits again are kept again, with their age.
+        let (mut app, _sent) = start(base.clone());
+        app.connected = false;
+        app.remove_nodes(&["c".into()]);
+        app.save_now();
+        drop(app);
+        let (mut app, _sent) = start(base.clone());
+        let saved = app.held_removals.as_ref().map(|h| h.saved_ms).unwrap();
+        app.save_now();
+        assert!(file().load_unsent().is_some_and(|u| u.saved_ms == saved && u.kept.len() == 1));
         let _ = std::fs::remove_dir_all(home);
     }
 

@@ -7,18 +7,30 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::sync::{ClientPrefs, Op};
+use crate::sync::{ClientPrefs, Kept, Op};
 
 /// Canvas changes a client could not send before it closed (offline, or
-/// waiting for the canvas again): kept next to its preferences and sent at
-/// its next start, so quitting while "Offline — reconnecting…" loses nothing.
+/// waiting for the canvas again): kept next to its preferences and replayed
+/// at its next start where the canvas still holds what they were made from
+/// (`sync::replay`), so quitting while "Offline — reconnecting…" loses
+/// nothing and overwrites nothing changed since. Read once at start, then
+/// removed; older than [`UNSENT_MAX_AGE_MS`] they are dropped.
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
 pub struct Unsent {
     /// The document they belong to.
     pub key: String,
     pub saved_ms: u64,
+    /// The changes with their bases.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<Kept>,
+    /// An older version's changes, without bases (never written now: an
+    /// older version cannot read this file, and leaves it alone).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ops: Vec<Op>,
 }
+
+/// Kept changes older than this are dropped at start, not replayed (a day).
+pub const UNSENT_MAX_AGE_MS: u64 = 24 * 3600 * 1000;
 
 pub struct PrefsFile {
     path: PathBuf,

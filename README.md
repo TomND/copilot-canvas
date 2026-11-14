@@ -1305,7 +1305,12 @@ terminal corpus), `canvas-mobile` (the iPhone app's Rust core, UniFFI),
   service broadcasts, so two windows (say one at home over `--remote`, one on
   the Cloud PC) can edit one canvas at once. Each window keeps its own view
   (position, zoom, panels, tiles). Changes made while offline wait; a window
-  closed before they could go keeps them and sends them when it opens again.
+  closed before they could go keeps them and, when it opens again within a
+  day, applies each one only where the canvas still holds what it was made
+  from: a field changed elsewhere since keeps that change, a box removed
+  elsewhere is not brought back, and a box removal waits for the terminal
+  list (a box whose session runs again stays). A notice says what was
+  restored and what was dropped, and why.
   Everything else a window needs from the
   machine (folders, Git, agent configuration, automations, VS Code) goes
   through the backend API. See [docs/BACKEND.md](docs/BACKEND.md).
