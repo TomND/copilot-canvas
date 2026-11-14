@@ -61,6 +61,12 @@ impl App {
     /// The service's numbers (`Stats`), compared with this client's lists.
     pub fn on_stats(&mut self, stats: ServiceStats) {
         let theirs = (stats.terminals, stats.alive);
+        if stats.terminals == 0
+            && self.connected
+            && let Some(held) = self.held_removals.as_mut()
+        {
+            held.terms_in = true;
+        }
         // A service with no terminal at all, whose list never came (a4bf57f
         // services never sent an empty one): nothing this client knew runs there.
         if self.resync_terms && stats.terminals == 0 && self.connected && !self.reconnecting {
@@ -127,6 +133,9 @@ impl App {
         // What was asked on the previous connection is not answered on this one.
         self.docs_asked = 0;
         self.resync_terms = true;
+        if let Some(held) = self.held_removals.as_mut() {
+            held.terms_in = false;
+        }
         // Launches the previous connection asked for are the service's now (a
         // restarted one resumes what it ran): never "preparing" forever.
         self.launching.clear();

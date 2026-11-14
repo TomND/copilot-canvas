@@ -23,8 +23,9 @@
 //!   that had this client's size and then took another was taken by another
 //!   client (the phone, another window): it is left to that client and the
 //!   tile says so until you click into it; going back to the size it had
-//!   before this client's `Resize` is that resize undone (a refused PTY
-//!   size), repaired like a size that never arrived (R2-D-07).
+//!   just before this client's `Resize` (within [`REVERT_WITHIN`]) is that
+//!   resize undone (a refused PTY size), repaired like a size that never
+//!   arrived (R2-D-07); later it is another client's take (R3-C-05).
 //! - While the sizes differ, both front ends draw the terminal's bottom rows
 //!   (or down to its cursor): `TermView::first_row`.
 
@@ -43,6 +44,10 @@ pub const RESIZE_SETTLE: Duration = Duration::from_millis(150);
 pub const SIZE_GRACE: Duration = Duration::from_millis(1500);
 /// The longest wait between two repairs of the same terminal.
 const REPAIR_MAX: Duration = Duration::from_secs(30);
+/// A terminal back at the size it had before this client's `Resize` within
+/// this long of it had that resize undone (a refused PTY size); later, it
+/// is another client's ordinary take (R3-C-05).
+pub const REVERT_WITHIN: Duration = Duration::from_millis(3000);
 
 /// What a tile in `state` says: "sized elsewhere" when another client took
 /// it or it is still another size after three repairs (about 10 s; a busy
@@ -174,7 +179,7 @@ impl App {
                 self.pending_sizes.remove(id);
                 self.last_sizes.insert(id.clone(), *size);
                 self.size_states.remove(id);
-                self.note_resized_from(id, *size);
+                self.note_resized_from(id, *size, now);
             }
         }
         // The terminal the keyboard went to here takes this client's size once
@@ -206,9 +211,9 @@ impl App {
         let state = self.size_states.get(id).copied();
         let next = match state {
             _ if have == want => SizeState::Matched,
-            // Back to the size it had before this client's `Resize`: that resize
-            // was undone (the PTY refused it), not taken by another client.
-            Some(SizeState::Matched) if self.resized_from.get(id) == Some(&have) => {
+            // Back to the size it had just before this client's `Resize`: that
+            // resize was undone (the PTY refused it), not taken by another client.
+            Some(SizeState::Matched) if self.resized_from.get(id).is_some_and(|(from, at)| *from == have && now.saturating_duration_since(*at) <= REVERT_WITHIN) => {
                 self.resized_from.remove(id);
                 if self.claim_held.as_deref() == Some(id) {
                     self.claim_held = None;
@@ -234,7 +239,7 @@ impl App {
                 if !self.queue(ClientMsg::Resize { id: id.to_owned(), cols: want.0, rows: want.1 }) {
                     return;
                 }
-                self.note_resized_from(id, want);
+                self.note_resized_from(id, want, now);
                 if claim {
                     self.queue(ClientMsg::Claim { id: id.to_owned() });
                 }
@@ -248,11 +253,11 @@ impl App {
         }
     }
 
-    /// A `Resize` to `size` went out for `id`: the size it had (when another).
-    fn note_resized_from(&mut self, id: &str, size: (u16, u16)) {
+    /// A `Resize` to `size` went out for `id` at `now`: the size it had (when another).
+    fn note_resized_from(&mut self, id: &str, size: (u16, u16), now: Instant) {
         match self.views.get(id).filter(|v| v.cols > 0 && v.rows > 0).map(|v| (v.cols, v.rows)) {
             Some(have) if have != size => {
-                self.resized_from.insert(id.to_owned(), have);
+                self.resized_from.insert(id.to_owned(), (have, now));
             }
             _ => {}
         }
@@ -522,5 +527,35 @@ mod tests {
         assert!(app.size_note("a").is_none());
         app.sync_sizes(since + SIZE_GRACE);
         assert!(sizes(&sent).contains(&ClientMsg::Resize { id: "a".into(), cols: narrow.0, rows: narrow.1 }), "repaired");
+    }
+
+    #[test]
+    fn another_clients_later_take_of_the_size_it_had_before_a_repair_is_a_take() {
+        let (mut app, sent) = rig(&["a"]);
+        alive(&mut app, "a");
+        app.select_node("a", false);
+        app.show_terminal("a");
+        draw(&mut app);
+        draw(&mut app);
+        let want = tile(&app, "a");
+        let phone = (want.0 - 30, want.1 + 7);
+        // The phone has it at its size; this window's repair asks for the tile's (and notes the phone's).
+        frame(&mut app, "a", phone.0, phone.1);
+        let start = Instant::now();
+        app.sync_sizes(start);
+        app.sync_sizes(start + SIZE_GRACE);
+        assert!(sizes(&sent).contains(&ClientMsg::Resize { id: "a".into(), cols: want.0, rows: want.1 }));
+        // You type here: it takes this window's size.
+        frame(&mut app, "a", want.0, want.1);
+        app.sync_sizes(start + SIZE_GRACE + Duration::from_millis(500));
+        assert_eq!(app.size_states.get("a"), Some(&SizeState::Matched));
+        // Ten seconds later the phone types: its size again, an ordinary take,
+        // said at once, and not repaired.
+        frame(&mut app, "a", phone.0, phone.1);
+        app.sync_sizes(start + SIZE_GRACE + Duration::from_secs(10));
+        assert_eq!(app.size_states.get("a"), Some(&SizeState::Taken));
+        assert_eq!(app.size_note("a"), Some("sized elsewhere: click to fit"));
+        app.sync_sizes(start + Duration::from_secs(60));
+        assert!(!sizes(&sent).iter().any(|m| matches!(m, ClientMsg::Resize { .. })), "left to the phone");
     }
 }

@@ -349,6 +349,14 @@ fn relay_trouble(line: &str) -> bool {
         || (lower.contains("relay") && relay_word)
 }
 
+/// A line in which the child says its relay connection is back
+/// ("Reconnected to tunnel relay", "Connected to tunnel: …"): what a
+/// relay-trouble line said is over (R3-C-07).
+fn relay_back(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("reconnected") || lower.contains("re-established") || lower.contains("restored") || (lower.starts_with("connected to") && !lower.contains("not connected"))
+}
+
 fn read_lines(source: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
     std::thread::Builder::new()
         .name("devtunnel-output".into())
@@ -358,6 +366,8 @@ fn read_lines(source: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
                 let mut output = lock(&output);
                 if let Some(forward) = parse_forward(&line) {
                     output.forwards.push(forward);
+                } else if relay_back(&line) {
+                    output.relay_lost = false;
                 } else if !output.forwards.is_empty() && relay_trouble(&line) {
                     output.relay_lost = true;
                 }
@@ -482,6 +492,13 @@ mod tests {
         }
         for line in ["Connected to tunnel: atelier.usw2", "Connection to port 47600 is E2E encrypted between tunnel client and tunnel host.", "Ready to accept connections for tunnel: atelier.usw2."] {
             assert!(!relay_trouble(line), "{line}");
+        }
+        // The relay back: what a trouble line said is over (R3-C-07).
+        for line in ["Reconnected to tunnel relay", "Connected to tunnel: atelier.usw2", "Connection to the tunnel relay re-established."] {
+            assert!(relay_back(line), "{line}");
+        }
+        for line in ["Connection to the tunnel relay was lost. Reconnecting...", "Reconnecting to tunnel atelier.usw2...", "Disconnected from tunnel relay", "Not connected to tunnel relay"] {
+            assert!(!relay_back(line), "{line}");
         }
     }
 

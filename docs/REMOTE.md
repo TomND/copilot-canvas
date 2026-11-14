@@ -252,7 +252,12 @@ copied and emptied when it cannot be renamed at its size limit.
   0.5 s, 1 s, then every 1.5 s (Phase 6: it was 2 s, then every 5 s, which
   missed PLAN §9's "≤ 2 s after the network returns" after outages longer
   than a few seconds; an attempt is one TCP connect). A local service that is
-  gone is started again. Remote clients never restart or upgrade the service:
+  gone is started again, unless it was stopped on purpose since the client
+  connected (`atelier service stop` leaves a record,
+  `conn::stop_record_path`, written before its terminals stop): the banner
+  then says "Service stopped", **▶ Start service** removes the record and the
+  next attempt starts it, and meanwhile attempts keep connecting without
+  starting it (R3-B-01). Remote clients never restart or upgrade the service:
   a protocol mismatch is shown as an error. A service of another build with
   the same protocol is not refused, but mixed builds are unsupported (an older
   client froze resuming a large session against a newer service): the client
@@ -314,9 +319,11 @@ copied and emptied when it cannot be renamed at its size limit.
   (the service restarting closes them too, for shorter). Closes count as
   failures instead (two restart it) for a minute after a connection through
   the child went silent until this client's watchdog closed it (a service
-  that shuts down closes its connections; a lost relay leaves them silent),
-  and while the child's own output said its relay connection was lost or is
-  reconnecting. But a child is never restarted when it is
+  that shuts down closes its connections; a lost relay leaves them silent;
+  any byte read counts, a part of a large message too), and while the
+  child's own output said its relay connection was lost or is reconnecting
+  (until it says the relay is back: "Reconnected …", "Connected to …",
+  R3-C-07). But a child is never restarted when it is
   younger than 10 s, nor one that carries another connection that is up
   (another window, an upload), and an answer from the service (a refusal
   included) counts as the tunnel working.
@@ -325,6 +332,12 @@ copied and emptied when it cannot be renamed at its size limit.
   requests, canvas edits), and every byte read counts as a sign of life, so a
   large answer slower than the 6 s dead-after time no longer ends the
   connection on the client's side.
+- Uploads and clipboard images go over a connection of their own
+  (`conn::Bulk`). When it cannot be opened, at most 1 MB goes over the
+  window's connection instead, and at most 64 KiB while the service paces by
+  this window's acknowledgements (`Conn::acking`): an acknowledgement written
+  behind an upload would wait for all of it, and the service would send
+  nothing else meanwhile (R3-A-06); a larger one fails, saying so.
 
 ## Pairing
 

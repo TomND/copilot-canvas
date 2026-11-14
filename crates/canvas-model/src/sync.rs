@@ -353,6 +353,193 @@ pub fn same_shared(a: &Doc, b: &Doc) -> bool {
     diff(a, b).is_empty()
 }
 
+/// A local change kept for a later start of the client (it could not be
+/// sent, or was sent and never confirmed), with what the service had where
+/// it applies when it was made: replayed only where that is still so
+/// ([`replay`], R3-C-02).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Kept {
+    pub op: Op,
+    /// The service's copy of what `op` changes, as this client knew it: the
+    /// box or group (none: it did not exist), or the shared field's value
+    /// (none counts as null).
+    #[serde(default)]
+    pub base: Option<Value>,
+    /// Sent before it was kept and never confirmed: the service may have it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sent: bool,
+}
+
+/// What replaying kept changes did.
+#[derive(Default, Debug, PartialEq)]
+pub struct Replayed {
+    /// Changes made to the document (they go to the service with the next edit).
+    pub applied: usize,
+    /// Changes the document has already (the service got them before).
+    pub already: usize,
+    /// Not made: what they change was changed elsewhere since (what, for the notice).
+    pub changed: Vec<String>,
+    /// Not made: the box or group is no longer on the canvas (never brought back).
+    pub gone: Vec<String>,
+    /// Not made: kept without a base by an older version, so not checkable.
+    pub unchecked: usize,
+    /// Box removals whose box is unchanged since: the caller makes them once
+    /// it knows the box does not run again (a removal never stops anything).
+    pub removals: Vec<Kept>,
+}
+
+impl Replayed {
+    /// Changes not made, of every kind.
+    pub fn dropped(&self) -> usize {
+        self.changed.len() + self.gone.len() + self.unchecked
+    }
+}
+
+/// A kept change's base as an object (`None`: it did not exist).
+fn base_object<T: Object>(base: &Option<Value>) -> Option<T> {
+    base.as_ref().and_then(|value| serde_json::from_value(value.clone()).ok())
+}
+
+/// How a shared field is named in notices.
+fn field_label(name: &str) -> String {
+    NOTICED_FIELDS.iter().find(|(f, _)| *f == name).map_or_else(|| name.replace('_', " "), |(_, label)| (*label).to_owned())
+}
+
+/// Adds `label` to a notice's list once.
+fn note(list: &mut Vec<String>, label: String) {
+    if !list.contains(&label) {
+        list.push(label);
+    }
+}
+
+/// Replays changes kept by an earlier run on top of the service's document
+/// as it is now, as a three-way merge per field: a field is set only when
+/// it still holds the value the change was made from (or holds the new one
+/// already); a field changed elsewhere since keeps that change. A box or
+/// group that is gone is never brought back, but for one created here and
+/// never sent. Removals of boxes unchanged since are returned, not made.
+/// `None` bases (`legacy`: an older version's file) set fields of objects
+/// that exist and nothing else.
+pub fn replay(doc: &mut Doc, kept: &[Kept], legacy: &[Op]) -> Replayed {
+    let mut out = Replayed::default();
+    // Removed boxes take their subagent boxes and their subsessions' links
+    // along when the removal is made (`Doc::remove_node`), not before.
+    let removing: HashSet<&str> = kept.iter().filter_map(|k| if let Op::DelNode(id) = &k.op { Some(id.as_str()) } else { None }).collect();
+    for item in kept {
+        let known = Some(&item.base);
+        match &item.op {
+            Op::PutNode(node) => replay_object(doc, &node.id, Change::Set(&**node, None), known, item.sent, &mut out),
+            Op::PutGroup(group) => replay_object(doc, &group.id, Change::Set(&**group, None), known, item.sent, &mut out),
+            Op::GroupFields(group, fields) => replay_object(doc, &group.id, Change::Set(&**group, Some(fields)), known, item.sent, &mut out),
+            Op::DelGroup(id) => replay_object::<Group>(doc, id, Change::Delete, known, item.sent, &mut out),
+            Op::NodeFields(node, fields) => {
+                let base = base_object::<Node>(&item.base);
+                let unlinked = |f: &String| f == "parent" && node.parent.is_none() && base.as_ref().and_then(|b| b.parent.as_deref()).is_some_and(|p| removing.contains(p));
+                let fields: Vec<String> = fields.iter().filter(|f| !unlinked(f)).cloned().collect();
+                if !fields.is_empty() {
+                    replay_object(doc, &node.id, Change::Set(&**node, Some(&fields)), known, item.sent, &mut out);
+                }
+            }
+            Op::DelNode(id) => match (Node::find(doc, id), base_object::<Node>(&item.base)) {
+                (None, _) => out.already += 1,
+                // A subagent box goes with its session's removal.
+                (Some(now), _) if now.parent.as_deref().is_some_and(|p| removing.contains(p)) && now.kind == crate::doc::NodeKind::Agent => {}
+                (Some(now), Some(base)) if *now == base => out.removals.push(item.clone()),
+                (Some(now), _) => note(&mut out.changed, now.label()),
+            },
+            Op::SetField(name, value) => {
+                let now = field(doc, name).unwrap_or(Value::Null);
+                if now == *value {
+                    out.already += 1;
+                } else if now == item.base.clone().unwrap_or(Value::Null) && set_field(doc, name, value.clone()).is_ok() {
+                    out.applied += 1;
+                } else {
+                    note(&mut out.changed, field_label(name));
+                }
+            }
+        }
+    }
+    for op in legacy {
+        match op {
+            Op::NodeFields(node, fields) => replay_object(doc, &node.id, Change::Set(&**node, Some(fields)), None, true, &mut out),
+            Op::GroupFields(group, fields) => replay_object(doc, &group.id, Change::Set(&**group, Some(fields)), None, true, &mut out),
+            Op::SetField(name, value) if field(doc, name).as_ref() == Some(value) => out.already += 1,
+            Op::PutNode(node) if Node::find(doc, &node.id).is_some_and(|n| n == &**node) => out.already += 1,
+            Op::PutGroup(group) if Group::find(doc, &group.id).is_some_and(|g| g == &**group) => out.already += 1,
+            Op::DelNode(id) if Node::find(doc, id).is_none() => out.already += 1,
+            Op::DelGroup(id) if Group::find(doc, id).is_none() => out.already += 1,
+            _ => out.unchecked += 1,
+        }
+    }
+    out
+}
+
+/// One kept change of a box or group (see [`replay`]). `known`: its base
+/// (`None`: not recorded).
+fn replay_object<T: Object>(doc: &mut Doc, id: &str, op: Change<T>, known: Option<&Option<Value>>, sent: bool, out: &mut Replayed) {
+    let base = known.map(base_object::<T>);
+    let Some(now) = T::find(doc, id).cloned() else {
+        match (&op, base) {
+            // Created here and never sent: the service never had it.
+            (Change::Set(value, None), Some(None)) if !sent => {
+                T::list_mut(doc).push((*value).clone());
+                out.applied += 1;
+            }
+            (Change::Delete, _) => out.already += 1,
+            (Change::Set(value, _), _) => note(&mut out.gone, value.label()),
+        }
+        return;
+    };
+    let (value, fields) = match op {
+        Change::Delete => {
+            match base {
+                Some(Some(base)) if base == now => {
+                    T::list_mut(doc).retain(|x| x.id() != id);
+                    out.applied += 1;
+                }
+                Some(_) => note(&mut out.changed, now.label()),
+                None => out.unchecked += 1,
+            }
+            return;
+        }
+        Change::Set(value, fields) => (value, fields),
+    };
+    let (new, current) = (to_map(value), to_map(&now));
+    let base = match base {
+        Some(Some(base)) => Some(to_map(&base)),
+        // Created here and the service has it: what differs was changed there since.
+        Some(None) => Some(new.clone()),
+        None => None,
+    };
+    let names: Vec<String> = match fields {
+        Some(fields) => fields.to_vec(),
+        None => new.keys().chain(current.keys()).cloned().collect::<BTreeSet<_>>().into_iter().collect(),
+    };
+    let (mut take, mut conflict) = (Vec::new(), false);
+    for name in names.into_iter().filter(|f| f != "id") {
+        let (now, new) = (current.get(&name), new.get(&name));
+        if now == new {
+            continue;
+        }
+        match &base {
+            Some(base) if base.get(&name) != now => conflict = true,
+            _ => take.push(name),
+        }
+    }
+    if !take.is_empty()
+        && let Ok(merged) = merge(&now, value, Some(&take), &HashSet::new())
+        && let Some(at) = T::list(doc).iter().position(|x| x.id() == id)
+    {
+        T::list_mut(doc)[at] = merged;
+        out.applied += 1;
+    }
+    if conflict {
+        note(&mut out.changed, now.label());
+    } else if take.is_empty() {
+        out.already += 1;
+    }
+}
+
 /// A client's own view of a canvas: kept in the client's home, never shared.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ClientPrefs {
@@ -503,6 +690,32 @@ impl Replica {
     /// The service's document as of `version`.
     pub fn synced(&self) -> &Doc {
         &self.synced
+    }
+
+    /// The local changes the service may not have, with their bases, to
+    /// keep for a later start: first those sent and not confirmed (their
+    /// base is the service's copy), then those not sent (their base is that
+    /// copy with this client's edits in flight), so a replay in this order
+    /// checks each against what it was made from.
+    pub fn kept(&self, doc: &Doc) -> Vec<Kept> {
+        let based = |from: &Doc, to: &Doc, sent: bool| -> Vec<Kept> {
+            diff(from, to)
+                .into_iter()
+                .map(|op| {
+                    let base = match &op {
+                        Op::PutNode(node) | Op::NodeFields(node, _) => Node::find(from, &node.id).and_then(|n| serde_json::to_value(n).ok()),
+                        Op::DelNode(id) => Node::find(from, id).and_then(|n| serde_json::to_value(n).ok()),
+                        Op::PutGroup(group) | Op::GroupFields(group, _) => Group::find(from, &group.id).and_then(|g| serde_json::to_value(g).ok()),
+                        Op::DelGroup(id) => Group::find(from, id).and_then(|g| serde_json::to_value(g).ok()),
+                        Op::SetField(name, _) => field(from, name),
+                    };
+                    Kept { op, base, sent }
+                })
+                .collect()
+        };
+        let mut kept = based(&self.synced, &self.shadow, true);
+        kept.extend(based(&self.shadow, doc, false));
+        kept
     }
 
     /// The local changes not sent yet, as an edit `(base version, ops)`;
@@ -1124,5 +1337,105 @@ mod tests {
         let mut target = Doc::default();
         prefs.apply(&mut target);
         assert_eq!(ClientPrefs::of(&target), prefs);
+    }
+
+    /// Kept changes as a file holds them.
+    fn through_a_file(kept: Vec<Kept>) -> Vec<Kept> {
+        serde_json::from_str(&serde_json::to_string(&kept).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn kept_changes_replay_only_where_the_canvas_still_holds_what_they_were_made_from() {
+        let base = Doc { nodes: vec![node("a", 0), node("b", 0), node("c", 0), node("d", 0)], idle_stop_minutes: 60, automations_dir: None, ..Doc::default() };
+        let server = Server::new(base.clone());
+        let mut w = Window::open(&server, 1);
+        // Offline: rename a, move b, create e, two settings, remove c and d.
+        w.doc.node_mut("a").unwrap().name = "mine".into();
+        w.doc.node_mut("b").unwrap().x = 5;
+        w.doc.nodes.push(node("e", 9));
+        w.doc.idle_stop_minutes = 30;
+        w.doc.automations_dir = Some("C:\\mine".into());
+        w.doc.nodes.retain(|n| n.id != "c" && n.id != "d");
+        let kept = through_a_file(w.replica.kept(&w.doc));
+        assert!(kept.iter().all(|k| !k.sent), "nothing was sent");
+        // Since then, elsewhere: a renamed, d moved, b removed, the folder set.
+        let mut now = base.clone();
+        now.node_mut("a").unwrap().name = "theirs".into();
+        now.node_mut("d").unwrap().x = 3;
+        now.nodes.retain(|n| n.id != "b");
+        now.automations_dir = Some("C:\\theirs".into());
+        let replayed = replay(&mut now, &kept, &[]);
+        assert_eq!(now.node("a").unwrap().name, "theirs", "a newer rename wins");
+        assert!(now.node("b").is_none(), "a box removed elsewhere is never brought back");
+        assert_eq!(now.node("e").map(|n| n.x), Some(9), "a box created offline is added");
+        assert_eq!(now.idle_stop_minutes, 30, "a setting unchanged since takes the change");
+        assert_eq!(now.automations_dir.as_deref(), Some("C:\\theirs"), "one changed since keeps that change");
+        assert!(now.node("c").is_some() && now.node("d").is_some(), "removals are the caller's to make");
+        assert_eq!(replayed.applied, 2);
+        assert_eq!(replayed.changed, ["“d”", "“theirs”", "the automations folder"]);
+        assert_eq!(replayed.gone, ["“b”"]);
+        assert_eq!(replayed.removals.iter().map(|k| k.op.clone()).collect::<Vec<_>>(), [Op::DelNode("c".into())], "d changed since: it stays");
+        assert_eq!(replayed.dropped(), 4);
+    }
+
+    #[test]
+    fn kept_changes_the_service_had_change_nothing_and_a_box_sent_then_removed_stays_gone() {
+        let server = Server::new(Doc { nodes: vec![node("a", 0)], ..Doc::default() });
+        let mut w = Window::open(&server, 1);
+        // Sent, never confirmed (the tunnel died); then the new box moved offline.
+        w.doc.nodes.push(node("new", 1));
+        w.doc.node_mut("a").unwrap().x = 4;
+        let lost = w.take().unwrap();
+        w.doc.node_mut("new").unwrap().x = 2;
+        let kept = through_a_file(w.replica.kept(&w.doc));
+        assert!(kept[0].sent && !kept.last().unwrap().sent, "sent ones first: {kept:?}");
+        // The service had applied the edit: only the later move is new.
+        let mut applied = Server::new(server.doc.clone());
+        applied.edit(1, lost);
+        let mut now = applied.doc.clone();
+        let replayed = replay(&mut now, &kept, &[]);
+        assert_eq!((replayed.applied, replayed.already, replayed.dropped()), (1, 2, 0), "{replayed:?}");
+        assert_eq!((now.node("new").unwrap().x, now.node("a").unwrap().x), (2, 4));
+        // The box was removed elsewhere since: not brought back, nor moved.
+        let mut now = applied.doc.clone();
+        now.nodes.retain(|n| n.id != "new");
+        let replayed = replay(&mut now, &kept, &[]);
+        assert!(now.node("new").is_none());
+        assert_eq!(replayed.gone, ["“new”"]);
+        // The edit never arrived: the move of a is made; the box, which may as
+        // well have been removed, is not brought back (the notice names it).
+        let mut now = server.doc.clone();
+        let replayed = replay(&mut now, &kept, &[]);
+        assert_eq!(now.node("a").unwrap().x, 4);
+        assert!(now.node("new").is_none() && replayed.gone == ["“new”"]);
+    }
+
+    #[test]
+    fn a_kept_removal_takes_its_subagents_and_links_only_when_it_is_made() {
+        let mut agent = node("p:x", 0);
+        agent.kind = NodeKind::Agent;
+        agent.parent = Some("p".into());
+        let mut sub = node("s", 0);
+        sub.parent = Some("p".into());
+        let server = Server::new(Doc { nodes: vec![node("p", 0), agent, sub], ..Doc::default() });
+        let mut w = Window::open(&server, 1);
+        w.doc.remove_node("p");
+        let kept = through_a_file(w.replica.kept(&w.doc));
+        let mut now = server.doc.clone();
+        let replayed = replay(&mut now, &kept, &[]);
+        assert_eq!(replayed.removals.len(), 1);
+        assert_eq!((now.nodes.len(), now.node("s").unwrap().parent.as_deref()), (3, Some("p")), "nothing is cut before the removal is made");
+        assert_eq!((replayed.applied, replayed.dropped()), (0, 0));
+    }
+
+    #[test]
+    fn an_older_versions_kept_changes_set_fields_of_boxes_that_exist_and_nothing_else() {
+        let mut now = Doc { nodes: vec![node("a", 0), node("b", 0)], ..Doc::default() };
+        let legacy =
+            vec![Op::NodeFields(Box::new(node("a", 7)), vec!["x".into()]), Op::PutNode(Box::new(node("gone", 1))), Op::DelNode("b".into()), Op::SetField("idle_stop_minutes".into(), serde_json::json!(5))];
+        let replayed = replay(&mut now, &[], &legacy);
+        assert_eq!(now.node("a").unwrap().x, 7);
+        assert!(now.node("gone").is_none() && now.node("b").is_some() && now.idle_stop_minutes != 5);
+        assert_eq!((replayed.applied, replayed.unchecked), (1, 3));
     }
 }

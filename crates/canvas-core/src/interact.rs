@@ -288,6 +288,60 @@ mod tests {
     }
 
     #[test]
+    fn a_retried_or_refused_start_keeps_its_first_message() {
+        let prompts = |sent: &Receiver<ClientMsg>| -> Vec<Option<String>> {
+            sent.try_iter()
+                .filter_map(|m| match m {
+                    ClientMsg::Launch { kind: crate::protocol::LaunchKind::Agent(launch), .. } => Some(launch.prompt.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let rig = app;
+        let closing = "still closing in this box's own terminal (copilot.exe pid 4242): try again in a few seconds";
+        let mut a = node("12345678-1234-1234-1234-123456789abc", false);
+        a.fresh = false;
+        let id = a.id.clone();
+        // A chat message sent while the box's previous run still closes: the retry carries it.
+        let (mut app, sent) = rig(vec![a.clone()]);
+        app.pending_prompts.insert(id.clone(), "hello".into());
+        app.start_node(&id);
+        assert_eq!(prompts(&sent), [Some("hello".to_owned())]);
+        app.on_service(crate::protocol::ServiceMsg::Error { id: Some(id.clone()), message: closing.into() });
+        *app.closing_retry.get_mut(&id).unwrap() -= crate::app::CLOSING_RETRY;
+        app.on_tick();
+        assert_eq!(prompts(&sent), [Some("hello".to_owned())], "the retry carries the message");
+        app.on_service(crate::protocol::ServiceMsg::Terminals(vec![crate::protocol::TermInfo { id: id.clone(), alive: true, ..Default::default() }]));
+        assert!(app.launch_once.is_empty() && app.pending_prompts.is_empty(), "spent once it runs");
+        // The retry's moment comes while offline: said, and the message waits for the next start.
+        let (mut app, sent) = rig(vec![a.clone()]);
+        app.pending_prompts.insert(id.clone(), "hello".into());
+        app.start_node(&id);
+        app.on_service(crate::protocol::ServiceMsg::Error { id: Some(id.clone()), message: closing.into() });
+        app.connected = false;
+        *app.closing_retry.get_mut(&id).unwrap() -= crate::app::CLOSING_RETRY;
+        app.on_tick();
+        assert!(app.notice.as_ref().is_some_and(|n| n.error && n.text.contains("offline (its message is kept")), "{:?}", app.notice);
+        app.connected = true;
+        let _ = prompts(&sent);
+        app.start_node(&id);
+        assert_eq!(prompts(&sent), [Some("hello".to_owned())]);
+        // Refused for another reason: the message is kept for the next start, and so is a new box's freshness.
+        let mut b = node("b", false);
+        b.fresh = true;
+        let (mut app, sent) = rig(vec![b]);
+        app.pending_prompts.insert("b".into(), "first".into());
+        app.start_node("b");
+        assert!(!app.doc.node("b").unwrap().fresh);
+        app.on_service(crate::protocol::ServiceMsg::Error { id: Some("b".into()), message: "copilot is not installed".into() });
+        assert!(app.notice.as_ref().is_some_and(|n| n.text.contains("its message is kept")));
+        assert!(app.doc.node("b").unwrap().fresh, "never started: still a new conversation");
+        let _ = prompts(&sent);
+        app.start_node("b");
+        assert_eq!(prompts(&sent), [Some("first".to_owned())]);
+    }
+
+    #[test]
     fn resume_needs_a_conversation_and_exited_terminals_give_way_to_details() {
         let mut copilot = node("12345678-1234-1234-1234-123456789abc", false);
         copilot.fresh = false;

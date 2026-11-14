@@ -466,7 +466,7 @@ fn upgrade_service(instance: &Instance, conn: conn::Conn, required: bool) -> Res
             return Ok((conn::connect(instance, true)?, Vec::new()));
         }
     }
-    conn.tx.send(ClientMsg::Shutdown)?;
+    conn::shutdown_for_restart(&conn.tx)?;
     drop(conn);
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline && conn::try_connect(instance).is_ok() {

@@ -51,7 +51,7 @@ the connection dropped while waiting).
 
 | Request | Answer | Used by |
 |---|---|---|
-| `Info` | `Info(BackendInfo)`: data folder, user profile folder, Copilot history folder, `data.db` path, the machine's default agent, installed agents | App start (agent for new sessions, installed agents, suggested group folders, folder browser start): asked at once only the first time; later starts use the copy the last run kept (`<home>/prefs/<client>-<key>.backend.json`) and ask again in the background |
+| `Info` | `Info(BackendInfo)`: data folder, user profile folder, Copilot history folder, `data.db` path, the machine's default agent, installed agents | App start (agent for new sessions, installed agents, suggested group folders, folder browser start): asked at once only the first time; later starts use the copy the last run kept (`<home>/prefs/<client>-<key>.backend.json`) and ask again in the background; without an answer it is asked again 15 s later, then 30 s, then every minute, and every reconnect asks once (R3-C-06) |
 | `ConfigSnapshot { agent }` | `Config(Snapshot)` (problems in `errors`; plugin folders filled in as `Plugin::local_folder`) | Plugins / MCP / Skills / Agents / Settings views, MCP picker, migration |
 | `ConfigSetEnabled { agent, what, name, enabled }` | `Text` (CLI output) | Space in the views |
 | `ConfigRemove { agent, what, name }` | `Text` | Del in the views |
@@ -228,8 +228,28 @@ changes that are not known to have arrived on top; they go out with the next
 edit. While offline nothing is sent; local changes wait. A client that
 quits meanwhile (or while it waits for the document again) keeps them next
 to its preferences (`<home>/prefs/<client>-<key>.unsent.json`, written by
-`App::save_now`); its next start puts them on top of the document and sends
-them, then forgets the file. A `DocOpen` whose
+`App::save_now`) with their bases (`Replica::kept`: the service's copy of
+each changed box, group or field, as this client knew it; changes sent and
+not confirmed first, then those never sent). Its next start reads the file
+and removes it at once, whatever comes of it (R3-C-02):
+- kept more than a day ago (`prefs::UNSENT_MAX_AGE_MS`), nothing is replayed;
+- otherwise `sync::replay` merges them into the service's document as it is
+  now, field by field: a field is set only when it still holds its base (or
+  holds the new value already); a field changed elsewhere since keeps that
+  change; a box or group that is gone is never brought back, except one
+  created here and never sent;
+- a box removal whose box is unchanged waits for the service's terminal list
+  (`App::held_removals`) and is then made as a removal here is (its
+  subagent boxes go, its subsessions are unlinked, `Forget` is sent),
+  unless the box's session runs again, is being started or waits in the
+  restore;
+- a file of an older build (no bases) only sets fields of boxes and groups
+  that exist.
+
+A notice says what was restored and what was dropped (older than a day,
+changed elsewhere since, no longer on the canvas), naming them.
+
+A `DocOpen` whose
 `Doc` has not come 10 s later is sent again (then after 20, 40 and 80 s); an
 answer that comes after the first one was taken, no newer than this copy, is
 dropped (its changes since would otherwise go again, over newer ones). A `Doc`
@@ -570,7 +590,7 @@ nothing until prompted) as idle once the terminal is quiet. Passive runs:
 |---|---|---|
 | bus snapshot (`ServiceMsg::Bus` JSON) | `restore`: `{started_ms, previous_ms, resuming, resumed, interrupted: [{id, why}]}` (absent when nothing ran before) | an older client ignores it (it shows the history's state: no "resuming after restart") |
 | `settings.json` | `restore: false` (absent: on) | an older service ignores it (it restores nothing anyway) |
-| `ClientMsg::Bus` | `{"action": "restore", "op": "cancel", "id"}`: a box waiting for its turn that you stopped is not resumed (one removed from the canvas is cancelled by its `DelNode` edit, no request needed) | an older service ignores the action |
+| `ClientMsg::Bus` | `{"action": "restore", "op": "cancel", "id"}`: a box waiting for its turn that you stopped is not resumed (one removed from the canvas is cancelled by its `DelNode` edit, no request needed); the window says "will not be resumed" only once a snapshot without the box comes (`App::check_restore_cancels`) | an older service ignores the action: its snapshot 3 s later still lists the box, or the box starts, and the window says the service cannot cancel a resume (R3-C-09) |
 
 `canvas_model::status::Status::{Interrupted, Resuming}` are computed on
 clients (not a wire enum); the iPhone maps them to `StatusKind::Stopped` (label

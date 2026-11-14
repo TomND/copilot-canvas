@@ -64,14 +64,20 @@ impl App {
         self.target.clone().filter(|t| t.is_remote() && self.conn.protocol >= 8).map(|t| (t, self.conn_options.clone()))
     }
 
+    /// How much of an upload may go over the window's own connection when
+    /// one of their own cannot be opened (see [`over_upload_connection`]).
+    pub fn upload_fallback_max(&self) -> u64 {
+        if self.conn.acking() { ACKED_FALLBACK_MAX } else { FALLBACK_MAX }
+    }
+
     fn upload_and_paste(&mut self, term: String, paths: Vec<String>) {
         let count = paths.len();
         self.notify(format!("Uploading {count} file(s) to the remote machine…"), false);
-        let bulk = self.upload_target();
+        let (bulk, fallback_max) = (self.upload_target(), self.upload_fallback_max());
         self.in_background(
             move |backend| {
                 let size = paths.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
-                let sent = over_upload_connection(backend, bulk, size, |backend| {
+                let sent = over_upload_connection(backend, bulk, size, fallback_max, |backend| {
                     let mut uploaded = Vec::new();
                     let mut errors = Vec::new();
                     for path in &paths {
@@ -104,21 +110,27 @@ impl App {
 /// cannot be opened: more would hold typing and its echo behind it for
 /// seconds on a tunnel (R2-D-06).
 pub const FALLBACK_MAX: u64 = 1 << 20;
+/// The same for a window's connection the service paces by its
+/// acknowledgements: one written behind an upload waits for the whole
+/// upload, and the service sends nothing more meanwhile (R3-A-06).
+pub const ACKED_FALLBACK_MAX: u64 = 64 << 10;
 
 /// Runs `work` on a connection of its own for uploads (`bulk`, remote
 /// mode; the window's own `main` otherwise). When that cannot be opened, a
-/// transfer of `size` bytes up to [`FALLBACK_MAX`] goes over `main`; a larger
-/// one fails, saying why.
+/// transfer of `size` bytes up to `fallback_max` ([`FALLBACK_MAX`], or
+/// [`ACKED_FALLBACK_MAX`]: `App::upload_fallback_max`) goes over `main`; a
+/// larger one fails, saying why.
 pub fn over_upload_connection<T>(
     main: &dyn Backend,
     bulk: Option<(crate::conn::ConnTarget, crate::conn::ConnOptions)>,
     size: u64,
+    fallback_max: u64,
     work: impl FnOnce(&dyn Backend) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     let Some((target, options)) = bulk else { return work(main) };
     match crate::conn::open_bulk(&target, &options) {
         Ok(bulk) => work(&*bulk.backend),
-        Err(_) if size <= FALLBACK_MAX => work(main),
+        Err(_) if size <= fallback_max => work(main),
         Err(error) => Err(error.context(format!(
             "no connection of its own could be opened for {} KB (not sent over the window's, which typing uses); try again",
             size.div_ceil(1024)
@@ -219,11 +231,14 @@ mod tests {
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
         let bulk = || Some((crate::conn::ConnTarget::Tcp { addr: closed.clone(), remote_id: None, secret: vec![1] }, crate::conn::ConnOptions::default()));
         let main = crate::rpc::Offline;
-        let used = |size: u64| over_upload_connection(&main, bulk(), size, |_| Ok(())).map_err(|e| format!("{e:#}"));
-        assert_eq!(used(FALLBACK_MAX), Ok(()), "a small one goes over the window's connection");
-        let error = used(FALLBACK_MAX + 1).unwrap_err();
+        let used = |size: u64, max: u64| over_upload_connection(&main, bulk(), size, max, |_| Ok(())).map_err(|e| format!("{e:#}"));
+        assert_eq!(used(FALLBACK_MAX, FALLBACK_MAX), Ok(()), "a small one goes over the window's connection");
+        let error = used(FALLBACK_MAX + 1, FALLBACK_MAX).unwrap_err();
         assert!(error.contains("not sent over the window's"), "{error}");
+        // A window's connection the service paces by its acknowledgements takes far less (R3-A-06).
+        assert_eq!(used(ACKED_FALLBACK_MAX, ACKED_FALLBACK_MAX), Ok(()));
+        assert!(used(ACKED_FALLBACK_MAX + 1, ACKED_FALLBACK_MAX).is_err());
         // Local mode: the window's own backend.
-        assert!(over_upload_connection(&main, None, 1 << 30, |_| Ok(())).is_ok());
+        assert!(over_upload_connection(&main, None, 1 << 30, FALLBACK_MAX, |_| Ok(())).is_ok());
     }
 }
