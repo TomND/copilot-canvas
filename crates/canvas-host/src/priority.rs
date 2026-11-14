@@ -6,13 +6,37 @@
 //! never run above normal, so the terminal pipeline (the service, above
 //! normal, and the console host that carries every keystroke and echo)
 //! always outranks the work the agent does. A session counts as the one you
-//! type in for [`FOCUS_LAPSE`] after its last keystroke, so nothing keeps a
-//! raised class forever.
+//! type in while it is a window's keyboard tile, and for [`FOCUS_LAPSE`]
+//! after its last keystroke otherwise. The console host of every session on
+//! someone's screen runs above normal whatever the agent's class (it costs
+//! nothing while its session is idle, and carries the output you watch,
+//! R2-B-02).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use canvas_sys::process::Class;
+
+/// The priority manager runs (`ATELIER_NO_PRIORITY=1` turns it off).
+pub fn enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| canvas_common::env::var_os("ATELIER_NO_PRIORITY").is_none())
+}
+
+/// The class of the session of terminal `id`: the one you type in (the
+/// last keystroke's within the lapse, `typed`) and every window's keyboard
+/// tile (`keyboard`) come first, then the others on someone's screen
+/// (`visible`), then the rest.
+pub fn session_class(id: &str, typed: Option<&str>, keyboard: &HashSet<String>, visible: &HashSet<String>) -> Class {
+    if typed == Some(id) || keyboard.contains(id) {
+        Class::Focused
+    } else if visible.contains(id) {
+        Class::Visible
+    } else {
+        Class::Background
+    }
+}
 
 /// The session you typed in last stays first this long without a keystroke.
 pub const FOCUS_LAPSE: Duration = Duration::from_secs(60);
@@ -73,8 +97,10 @@ fn lower(a: Class, b: Class) -> Class {
 /// - The agent: the root, and its children running the same program (a
 ///   launcher and the CLI it starts, as Copilot's `copilot.exe` does): the
 ///   session's class.
-/// - Its console host: the session's class but never below normal, so the
-///   process carrying keystrokes and echo never runs below what it serves.
+/// - Its console host: above normal while the session is on someone's
+///   screen (focused or visible), else normal: the process carrying
+///   keystrokes and echo never runs below what it serves, nor below the
+///   builds next to it while you watch.
 /// - Everything else it starts: the session's class but never above normal.
 pub fn classify(sessions: &[Session], procs: &Procs, tree: impl Fn(u32) -> Vec<u32>) -> HashMap<u32, Class> {
     let mut classes: HashMap<u32, Class> = HashMap::new();
@@ -88,10 +114,15 @@ pub fn classify(sessions: &[Session], procs: &Procs, tree: impl Fn(u32) -> Vec<u
             set(pid, if agent { session.class } else { lower(session.class, Class::Visible) });
         }
         if let Some(host) = session.console_host {
-            set(host, higher(session.class, Class::Visible));
+            set(host, host_class(session.class));
         }
     }
     classes
+}
+
+/// A console host's class for its session's.
+pub fn host_class(session: Class) -> Class {
+    if session == Class::Background { Class::Visible } else { Class::Focused }
 }
 
 /// Applies `classes` through `set` (which says whether it worked), skipping
@@ -198,7 +229,8 @@ mod tests {
             true
         });
         assert!(calls.is_empty(), "nothing again while nothing changed");
-        // You type in the other session: the first one's agent and host go back to normal.
+        // You type in the other session: the first one's agent goes back to
+        // normal; console hosts on screen stay above normal (R2-B-02).
         let second = classify(
             &[Session { root: 11, console_host: Some(10), class: Class::Visible }, Session { root: 21, console_host: Some(20), class: Class::Focused }],
             &procs,
@@ -209,7 +241,7 @@ mod tests {
             true
         });
         calls.sort_by_key(|(pid, _)| *pid);
-        assert_eq!(calls, [(10, Class::Visible), (11, Class::Visible), (12, Class::Visible), (20, Class::Focused), (21, Class::Focused)]);
+        assert_eq!(calls, [(11, Class::Visible), (12, Class::Visible), (21, Class::Focused)]);
         // A process that could not be set is tried again next time.
         let mut failing = HashMap::new();
         reapply(&mut failing, &second, |pid, _| pid != 21);
@@ -232,10 +264,34 @@ mod tests {
         assert!(focus.note("b", start + Duration::from_secs(3) + FOCUS_LAPSE));
     }
 
+    /// R2-B-02: a window's keyboard tile comes first however long ago you
+    /// typed in it; another session you typed in lapses after a minute; the
+    /// console host of a session on screen stays above normal, lapsed or not.
+    #[test]
+    fn a_keyboard_tile_never_lapses_and_console_hosts_on_screen_stay_first() {
+        let keyboard: HashSet<String> = ["a".to_owned()].into();
+        let visible: HashSet<String> = ["a".to_owned(), "b".to_owned()].into();
+        let start = Instant::now();
+        let mut focus = Focus::default();
+        focus.note("a", start);
+        let lapsed = start + FOCUS_LAPSE + Duration::from_secs(1);
+        assert_eq!(focus.current(lapsed), None, "the keystrokes' focus lapsed");
+        assert_eq!(session_class("a", focus.current(lapsed), &keyboard, &visible), Class::Focused, "still the window's keyboard tile");
+        assert_eq!(session_class("b", focus.current(lapsed), &keyboard, &visible), Class::Visible);
+        focus.note("b", lapsed);
+        assert_eq!(session_class("b", focus.current(lapsed), &keyboard, &visible), Class::Focused, "typed in just now");
+        assert_eq!(session_class("c", None, &keyboard, &visible), Class::Background);
+        let procs = machine();
+        let sessions = [Session { root: 11, console_host: Some(10), class: Class::Visible }, Session { root: 21, console_host: Some(20), class: Class::Background }];
+        let classes = classify(&sessions, &procs, tree_of(&procs));
+        assert_eq!((classes[&11], classes[&10]), (Class::Visible, Class::Focused), "a session on screen: its agent at normal, its console host above");
+        assert_eq!((classes[&21], classes[&20]), (Class::Background, Class::Visible), "off screen: the host at normal");
+    }
+
     /// A real terminal (cmd.exe running ping): its console host is the
-    /// service's child, follows the agent's class and never goes below
-    /// normal; the tool it runs is never raised. Only processes this test
-    /// starts are changed.
+    /// service's child, runs above normal while its session is on screen
+    /// and never goes below normal; the tool it runs is never raised. Only
+    /// processes this test starts are changed.
     #[test]
     #[cfg(windows)]
     fn a_terminals_console_host_follows_its_agent_and_its_tools_are_never_raised() {
@@ -279,7 +335,7 @@ mod tests {
         };
         let mut applied = HashMap::new();
         for (class, host_class, tool_class) in
-            [(Class::Focused, Class::Focused, Class::Visible), (Class::Background, Class::Visible, Class::Background), (Class::Visible, Class::Visible, Class::Visible)]
+            [(Class::Focused, Class::Focused, Class::Visible), (Class::Background, Class::Visible, Class::Background), (Class::Visible, Class::Focused, Class::Visible)]
         {
             let (procs, children) = table();
             let sessions = [Session { root: terminal.pid, console_host: Some(console_host), class }];

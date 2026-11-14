@@ -1182,11 +1182,31 @@ impl Host {
         }
     }
 
+    /// You typed in (or clicked into) terminal `id`: its session comes
+    /// first. When that changes, its agent and console host are raised at
+    /// once (two known processes), before the priority pass that walks
+    /// every session's tree sorts out the rest (R2-B-02).
     fn note_active(&self, id: &str) {
         let changed = lock(&self.active_input).note(id, Instant::now());
-        if changed {
+        if changed && crate::priority::enabled() {
+            let terminal = lock(&self.terms).get(id).filter(|t| t.alive.load(Ordering::Acquire) && t.pid != 0).cloned();
+            if let Some(terminal) = terminal {
+                let class = canvas_sys::process::Class::Focused;
+                canvas_sys::process::set_priority(terminal.pid, class);
+                if let Some((host, started)) = terminal.console_host
+                    && canvas_sys::process::process_start_ms(host) == Some(started)
+                {
+                    canvas_sys::process::set_priority(host, crate::priority::host_class(class));
+                }
+            }
             let _ = self.priority_wake.try_send(());
         }
+    }
+
+    /// Every window's keyboard tile (`Subscribe8 { focused }`).
+    fn keyboard_tiles(&self) -> HashSet<String> {
+        let clients: Vec<Arc<Client>> = lock(&self.clients).values().cloned().collect();
+        clients.iter().filter_map(|c| lock(&c.focused).clone()).collect()
     }
 
     /// Resizes terminal `id` to `size` (when the size policy says so).
@@ -2227,6 +2247,8 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
         ClientMsg::Click { id, col, row, button, mods } => {
             host.input_from(client.id, &id);
             let _ = host.size_claim(client.id, &id);
+            // Clicking into a program is typing in it too (R2-B-02).
+            host.note_active(&id);
             host.terminal(&id)?.click(button, col, row, mods)?;
             let _ = host.pump.try_send(());
         }
@@ -2628,19 +2650,21 @@ fn send_images(client: &Client, terminal: &Arc<Terminal>, id: &str, images: &[Sn
 }
 
 /// Keeps the session you type in responsive on a busy machine
-/// (`crate::priority`): its agent and the agent's console host run above
-/// normal, sessions shown on screen at normal, all others below normal; the
-/// tools and builds an agent starts never run above normal. Background
-/// sessions still use all spare CPU; they just yield to you. Only processes
-/// inside our own sessions (and their console hosts) are touched.
+/// (`crate::priority`): its agent (every window's keyboard tile, and the
+/// session typed in last) runs above normal, as does the console host of
+/// every session on screen; other sessions shown on screen at normal, all
+/// others below normal; the tools and builds an agent starts never run
+/// above normal. Background sessions still use all spare CPU; they just
+/// yield to you. Only processes inside our own sessions (and their console
+/// hosts) are touched.
 /// `ATELIER_NO_PRIORITY=1` turns it off. Unix forbids raising priorities
 /// without privilege, so there the others are lowered instead
 /// (`canvas_sys::process::set_priority`: `PRIO_DARWIN_BG` on macOS, nice on
 /// Linux; MAC-LINUX-PLAN §5.3).
 fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
-    use crate::priority::{Session, classify, reapply};
+    use crate::priority::{Session, classify, reapply, session_class};
     use canvas_sys::process::Class;
-    if canvas_common::env::var_os("ATELIER_NO_PRIORITY").is_some() {
+    if !crate::priority::enabled() {
         return;
     }
     let mut applied: HashMap<u32, Class> = HashMap::new();
@@ -2664,6 +2688,7 @@ fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
         }
         let active = lock(&host.active_input).current(Instant::now()).map(str::to_owned);
         let visible = host.visible();
+        let keyboard = host.keyboard_tiles();
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut procs = crate::priority::Procs::new();
         for (pid, parent, name) in canvas_sys::process::process_entries() {
@@ -2676,13 +2701,7 @@ fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
                 root: t.pid,
                 // Still the same process (its pid not reused).
                 console_host: t.console_host.filter(|(pid, started)| canvas_sys::process::process_start_ms(*pid) == Some(*started)).map(|(pid, _)| pid),
-                class: if active.as_deref() == Some(t.id.as_str()) {
-                    Class::Focused
-                } else if visible.contains(&t.id) {
-                    Class::Visible
-                } else {
-                    Class::Background
-                },
+                class: session_class(&t.id, active.as_deref(), &keyboard, &visible),
             })
             .collect();
         let classes = classify(&sessions, &procs, |root| canvas_sys::process::process_tree(root, &children));

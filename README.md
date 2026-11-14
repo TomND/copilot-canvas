@@ -1346,16 +1346,21 @@ terminal corpus), `canvas-mobile` (the iPhone app's Rust core, UniFFI),
   are starting or working cannot starve them (they still run at normal
   priority themselves).
 - **The session you type in comes first.** The service gives the agent of the
-  session that last received your keystrokes (its own process, and the CLI
-  its launcher starts) and that terminal's console host (`conhost.exe`, which
-  carries every keystroke in and every byte of echo out) above-normal CPU
-  priority; the tools, builds, test runners and MCP servers the agent starts
-  stay at normal, so a build it runs never outranks your typing. Sessions
-  shown on screen run at normal priority, every other session below normal
-  (a console host never below normal). Background sessions still use all
-  spare CPU; they just yield to your typing. A session stops coming first a
-  minute after your last keystroke in it, and goes back as soon as you type
-  in another one. Re-applied every 2 s so new child processes follow.
+  session you type in (its own process, and the CLI its launcher starts)
+  above-normal CPU priority: each window's keyboard tile, and the session
+  that last received your keystrokes or clicks. Every console host of a
+  session on screen (`conhost.exe`, which carries every keystroke in and
+  every byte of output out) runs above normal too, also while you only watch
+  a long turn (it costs nothing while its session is idle). The tools,
+  builds, test runners and MCP servers the agent starts stay at normal, so a
+  build it runs never outranks your typing or the output you watch. Other
+  sessions shown on screen run at normal priority, every other session below
+  normal (a console host never below normal). Background sessions still use
+  all spare CPU; they just yield to your typing. A session that is no
+  window's keyboard tile stops coming first a minute after your last
+  keystroke in it, and goes back as soon as you type in another one; the
+  first key after that raises its agent and console host at once.
+  Re-applied every 2 s so new child processes follow.
   Measured with 40 CPU-burning background sessions on a busy 16-core
   machine: keystroke→screen p50 257 ms → 5 ms, p99 1.26 s → 14 ms. Disable
   with `ATELIER_NO_PRIORITY=1`.
