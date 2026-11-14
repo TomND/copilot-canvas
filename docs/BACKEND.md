@@ -788,8 +788,9 @@ sent again after a reconnection), the work held behind a launch is let go and
 the launch thread is given back, so the terminal's later messages and the
 connection's end are never held.
 **Stopped on purpose** (R3-B-01, R3-C-03; `canvas_common::stopped`). A local
-client's `ClientMsg::Shutdown` writes `<home>/run/stopped-<instance>.json`
-(`{"pid", "stopped_ms", "by", "build"}`: the service's pid, when, the client's
+client's `ClientMsg::Shutdown` writes `<home>/run/stopped-<instance>` (no
+extension; clients go by its presence and time, `conn::stop_record_path`;
+JSON `{"pid", "stopped_ms", "by", "build"}`: the service's pid, when, the client's
 name, id and pid, the service's build; written whole through a temporary
 file) before any terminal stops, unless that client sent
 `ClientMsg::Bus { json: stopped::RESTART_ACTION }`

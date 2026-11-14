@@ -1,5 +1,6 @@
 //! The record a service stopped on purpose leaves in its home (R3-B-01,
-//! R3-C-03): `<home>/run/stopped-<instance>.json`.
+//! R3-C-03): `<home>/run/stopped-<instance>` (JSON: [`Stopped`]; clients go
+//! by its presence and modification time, `canvas_core::conn::stop_record_path`).
 //!
 //! A local client's `ClientMsg::Shutdown` (`atelier service stop`, a window's
 //! *Stop service*) writes it before the service stops its terminals; a crash,
@@ -43,9 +44,9 @@ pub struct Stopped {
     pub build: String,
 }
 
-/// `<home>/run/stopped-<instance>.json`.
+/// `<home>/run/stopped-<instance>`.
 pub fn path(instance: &Instance) -> PathBuf {
-    instance.home.join("run").join(format!("stopped-{}.json", instance.name))
+    instance.home.join("run").join(format!("stopped-{}", instance.name))
 }
 
 /// The record, while there is one (an unreadable file counts as one, with nothing known).
@@ -60,7 +61,7 @@ pub fn write(instance: &Instance, stopped: &Stopped) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let partial = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let partial = path.with_file_name(format!("stopped-{}.{}.tmp", instance.name, std::process::id()));
     std::fs::write(&partial, serde_json::to_string(stopped).unwrap_or_default())?;
     std::fs::rename(&partial, &path).inspect_err(|_| {
         let _ = std::fs::remove_file(&partial);
@@ -90,7 +91,7 @@ mod tests {
         assert_eq!(read(&instance), None);
         let stopped = Stopped { pid: 7, stopped_ms: 1_000, by: "atelier (pid 9)".into(), build: "0.3.0-x".into() };
         write(&instance, &stopped).unwrap();
-        assert_eq!(path(&instance), home.join("run").join("stopped-t.json"));
+        assert_eq!(path(&instance), home.join("run").join("stopped-t"));
         assert_eq!(read(&instance), Some(stopped.clone()));
         // Older or newer fields are tolerated: a file with the pid and time only reads.
         std::fs::write(path(&instance), r#"{"pid":7,"stopped_ms":1000,"later":true}"#).unwrap();

@@ -320,7 +320,7 @@ new start, the logon task, a crash, a killed process, a reboot), it resumes
 what it was running, with no window needed.
 
 A stop on purpose stays a stop: `atelier service stop` (any local client's
-*Shutdown*) records it in `~/.atelier/run/stopped-<instance>.json` before
+*Shutdown*) records it in `~/.atelier/run/stopped-<instance>` before
 the service stops its terminals, and a window left open then says the service
 was stopped (with a Start action) instead of starting it again on its own a
 second later. Opening a window, its Start, `atelier service start`, the logon
