@@ -291,7 +291,8 @@ impl Terms {
         let Some(term) = self.get(id, generation) else { return };
         let mut state = lock(&term.state);
         if seq > state.input_acked {
-            if term.terminal.send_input(&Input::Raw(bytes)).is_err() {
+            // A client's keys from the hub: never waited for (refused, not acknowledged, when the engine is far behind).
+            if term.terminal.offer_input(&Input::Raw(bytes)).is_err() {
                 return;
             }
             state.input_acked = seq;

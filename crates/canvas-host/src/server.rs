@@ -212,6 +212,14 @@ impl InputSession {
         self.seen = Instant::now();
         true
     }
+
+    /// Input `seq` that `client` had admitted was refused: not applied after
+    /// all, unless later input was admitted since (its acknowledgement covers it).
+    fn refused(&mut self, client: u64, seq: u64) {
+        if self.owner == client && self.applied == seq {
+            self.applied = seq - 1;
+        }
+    }
 }
 
 /// One connected client.
@@ -1561,7 +1569,8 @@ enum Work {
     Message(ClientMsg),
     /// Input the reader admitted (numbered input is admitted in the order it
     /// arrives) for a terminal with work queued: applied after that work.
-    Input { id: String, input: Input },
+    /// `seq`: its number (`Input8`), taken back when the input is refused.
+    Input { id: String, input: Input, seq: Option<u64> },
     /// The client stopped showing a terminal that had work queued (its
     /// launch): its size wish goes once that work is done (R2-A-07).
     Leave(String),
@@ -1646,7 +1655,7 @@ impl Pending {
 fn handle(host: &Arc<Host>, client: &Arc<Client>, work: Work, quiet: bool) -> bool {
     let result = match work {
         Work::Message(message) => dispatch(host, client, message),
-        Work::Input { id, input } => apply_input(host, client, &id, &input),
+        Work::Input { id, input, seq } => apply_numbered(host, client, &id, &input, seq),
         Work::Leave(id) => {
             // Shown again meanwhile: it keeps its wish.
             if !lock(&client.subs).contains_key(&id) {
@@ -1875,10 +1884,10 @@ fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameRead
                     let work = match message {
                         // Admitted now, in arrival order; applied behind its terminal's work.
                         ClientMsg::Input8 { id, input, seq } => match admit(client, seq) {
-                            true => Work::Input { id, input },
+                            true => Work::Input { id, input, seq: Some(seq) },
                             false => continue,
                         },
-                        ClientMsg::Input { id, input } => Work::Input { id, input },
+                        ClientMsg::Input { id, input } => Work::Input { id, input, seq: None },
                         other => Work::Message(other),
                     };
                     if !queue(&pending, &work_tx, work) {
@@ -2248,9 +2257,23 @@ fn apply_input(host: &Host, client: &Client, id: &str, input: &Input) -> Result<
         // Its echo is due: a client under the stopgap pacing gets less else meanwhile.
         client.outbox.typed();
     }
-    host.terminal(id)?.send_input(input)?;
+    host.terminal(id)?.offer_input(input)?;
     let _ = host.pump.try_send(());
     Ok(())
+}
+
+/// [`apply_input`] for input the reader admitted as `seq`: refused (a
+/// terminal far behind, or gone), it is not counted as applied while it is
+/// the newest admitted, so a reconnection sends it again instead of the
+/// heartbeat acknowledging it (R2-B-07); the error names the terminal.
+fn apply_numbered(host: &Host, client: &Client, id: &str, input: &Input, seq: Option<u64>) -> Result<()> {
+    let applied = apply_input(host, client, id, input);
+    if applied.is_err()
+        && let (Some(seq), Some(session)) = (seq, &client.session)
+    {
+        lock(session).refused(client.id, seq);
+    }
+    applied
 }
 
 /// Whether this client may apply numbered input `seq` now (each at most
@@ -2293,7 +2316,7 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
         ClientMsg::Input { id, input } => apply_input(host, client, &id, &input)?,
         ClientMsg::Input8 { id, input, seq } => {
             if admit(client, seq) {
-                apply_input(host, client, &id, &input)?;
+                apply_numbered(host, client, &id, &input, Some(seq))?;
             }
         }
         ClientMsg::Heartbeat => {}
@@ -3073,6 +3096,35 @@ mod tests {
         assert!(!session.admit(1, 3), "the replaced connection no longer applies input");
         assert!(session.admit(2, 5));
         assert_eq!(session.applied, 5);
+    }
+
+    /// R2-B-07: refused input is not counted as applied while it is the
+    /// newest admitted (a reconnection sends it again); once later input was
+    /// admitted, that input's acknowledgement covers it.
+    #[test]
+    fn refused_input_is_taken_back_while_it_is_the_newest() {
+        let mut session = InputSession { applied: 4, owner: 1, seen: Instant::now() };
+        assert!(session.admit(1, 5));
+        session.refused(1, 5);
+        assert_eq!(session.applied, 4, "not acknowledged");
+        assert!(session.admit(1, 5), "sent again, it is admitted");
+        assert!(session.admit(1, 6));
+        session.refused(1, 5);
+        assert_eq!(session.applied, 6, "later input was admitted since");
+        session.refused(2, 6);
+        assert_eq!(session.applied, 6, "only the owner's refusals count");
+    }
+
+    /// R2-B-07 through a connection: input the service refuses is reported
+    /// with the terminal's name and never acknowledged by a heartbeat.
+    #[test]
+    fn refused_input_is_reported_and_not_acknowledged() {
+        let (instance, addr) = test_service("refused", |_| Arc::new(NoApp));
+        let (rx, mut writer, _closer) = test_client(&instance, addr, "refused-client");
+        writer.send(&ClientMsg::Input8 { id: "gone-box".into(), input: Input::Key { key: protocol::Key::Char('x'), mods: 0 }, seq: 1 }).unwrap();
+        expect(&rx, Duration::from_secs(5), "the refusal names the terminal", |m| matches!(m, ServiceMsg::Error { id: None, message } if message.contains("gone-box")));
+        let beat = expect(&rx, Duration::from_secs(5), "a heartbeat", |m| matches!(m, ServiceMsg::Heartbeat { .. }));
+        assert_eq!(beat, ServiceMsg::Heartbeat { input_ack: 0 }, "the refused key is not acknowledged");
     }
 
     /// A write end that appends to a shared buffer.

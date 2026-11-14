@@ -280,7 +280,10 @@ copied and emptied when it cannot be renamed at its size limit.
 - Keyboard input travels as `Input8` with a per-session sequence number. The
   service applies each number at most once and only from the session's newest
   connection (a half-open old connection is closed and stops applying input),
-  and reports the highest applied number in `Heartbeat` and `Ready8`. After a
+  and reports the highest applied number in `Heartbeat` and `Ready8`. A key
+  the service refuses (its terminal is gone, or its engine is 1024 inputs
+  behind: "terminal ID is not responding …", naming the terminal) is not
+  counted as applied while it is the newest. After a
   reconnect the client compares `Ready8.input_ack` with what it sent and shows
   "Reconnected. N keystroke(s) were not delivered." It never resends them.
 - Only a refusal the service proved (a revoked client, above) ends

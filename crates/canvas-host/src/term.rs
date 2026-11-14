@@ -50,9 +50,10 @@ pub const OUTPUT_QUEUE: usize = 64;
 const CONTROL_QUEUE: usize = 1024;
 /// Control messages handled before one waiting output chunk gets its turn.
 const CONTROL_BURST: u32 = 64;
-/// How long a request of the service's own (a stop's keys, an image, a
-/// remote terminal's reset) waits for room in the control queue. Clients'
-/// keys, clicks and scrolls never wait: a full queue refuses them at once.
+/// How long a request of the service's own (its typing, a stop's keys, an
+/// image, a remote terminal's reset) waits for room in the control queue.
+/// Clients' keys, clicks and scrolls never wait: a full queue refuses them
+/// at once ([`Terminal::offer_input`]).
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long an agent gets to quit on a stop request before it is killed ([`Terminal::stop`]).
 pub const STOP_GRACE: Duration = Duration::from_secs(10);
@@ -863,7 +864,7 @@ impl Terminal {
 
     /// [`offer`]: a client's control message, never waited for.
     fn offer(&self, ctl: Ctl) -> Result<()> {
-        offer(&self.control, ctl)
+        offer(&self.control, ctl, &self.id)
     }
 
     /// Raw bytes straight to the program (`false`: gone, or its queue full).
@@ -882,14 +883,26 @@ impl Terminal {
         self.offer(Ctl::Click { button, col, row, mods })
     }
 
-    /// Keys, paste and focus for the program. Never waits: a terminal whose
-    /// engine is far behind refuses the input at once (the error says so).
-    pub fn send_input(&self, input: &Input) -> Result<()> {
-        anyhow::ensure!(self.alive.load(Ordering::Acquire), "terminal has exited");
+    /// A client's keys, paste and focus for the program. Never waits: a
+    /// terminal whose engine is far behind refuses the input at once (the
+    /// error says so and names the terminal).
+    pub fn offer_input(&self, input: &Input) -> Result<()> {
+        anyhow::ensure!(self.alive.load(Ordering::Acquire), "terminal {} has exited", self.id);
         if let Some(remote) = &self.remote {
             remote.accepting()?;
         }
         self.offer(Ctl::Input(input.clone()))
+    }
+
+    /// The service's own typing (a passive run's message and its Enter, a
+    /// stop's keys): waits up to [`CONTROL_TIMEOUT`] for room behind a busy
+    /// engine instead of being refused at once as a client's keys are (R2-B-07).
+    pub fn send_input(&self, input: &Input) -> Result<()> {
+        anyhow::ensure!(self.alive.load(Ordering::Acquire), "terminal {} has exited", self.id);
+        if let Some(remote) = &self.remote {
+            remote.accepting()?;
+        }
+        self.command(Ctl::Input(input.clone()))
     }
 
     /// Resizes the PTY and the emulator together. Runs under the PTY lock so
@@ -1159,10 +1172,10 @@ fn frozen_image(frozen: &Frozen, id: u32, generation: u64) -> ImagePng {
 /// Queues a client's control message without waiting: a full queue (an
 /// engine that fell [`CONTROL_QUEUE`] messages behind) refuses it at once
 /// with the reason, and the client's reader goes on.
-fn offer(control: &Sender<Ctl>, ctl: Ctl) -> Result<()> {
+fn offer(control: &Sender<Ctl>, ctl: Ctl, id: &str) -> Result<()> {
     control.try_send(ctl).map_err(|error| match error {
-        TrySendError::Full(_) => anyhow::anyhow!("terminal is not responding: {} inputs are waiting for it; this one was not sent", control.len()),
-        TrySendError::Disconnected(_) => anyhow::anyhow!("terminal emulator has stopped"),
+        TrySendError::Full(_) => anyhow::anyhow!("terminal {id} is not responding: {} inputs are waiting for it; this one was not sent", control.len()),
+        TrySendError::Disconnected(_) => anyhow::anyhow!("the emulator of terminal {id} has stopped"),
     })
 }
 
@@ -2264,12 +2277,12 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         while harness.control.try_send(Ctl::Resized).is_ok() {}
         let started = Instant::now();
-        let error = offer(&harness.control, Ctl::Input(Input::Raw(b"x".to_vec()))).unwrap_err().to_string();
+        let error = offer(&harness.control, Ctl::Input(Input::Raw(b"x".to_vec())), "probe").unwrap_err().to_string();
         assert!(started.elapsed() < Duration::from_millis(50), "waited {:?}", started.elapsed());
-        assert!(error.contains("not responding") && error.contains(&CONTROL_QUEUE.to_string()), "{error}");
+        assert!(error.contains("terminal probe is not responding") && error.contains(&CONTROL_QUEUE.to_string()), "{error}");
         // Once the engine caught up, input goes through again.
         let deadline = Instant::now() + Duration::from_secs(10);
-        while offer(&harness.control, Ctl::Input(Input::Raw(b"y".to_vec()))).is_err() {
+        while offer(&harness.control, Ctl::Input(Input::Raw(b"y".to_vec())), "probe").is_err() {
             assert!(Instant::now() < deadline, "the queue drains");
             std::thread::sleep(Duration::from_millis(20));
         }
