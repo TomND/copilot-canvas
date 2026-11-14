@@ -28,6 +28,12 @@ const DOC_FLUSH: Duration = Duration::from_millis(100);
 pub const DOC_RETRY: Duration = Duration::from_secs(10);
 /// View and panel changes are written to the client's preferences this soon.
 const PREFS_FLUSH: Duration = Duration::from_millis(400);
+/// A session whose box's terminal ended here and whose summary still says
+/// live this long after, unchanged, is taken as no longer live (R2-D-03).
+pub const LIVE_DOUBT: Duration = Duration::from_secs(5);
+/// A launch refused because the box's own previous run is still closing is
+/// sent again once, this long after (R2-D-10).
+pub const CLOSING_RETRY: Duration = Duration::from_millis(2500);
 
 pub enum AppEvent {
     Git { req: u64, folder: String, result: Result<Option<GitInfo>, String> },
@@ -71,6 +77,14 @@ pub struct Notice {
     pub text: String,
     pub error: bool,
     pub until: Instant,
+}
+
+/// A session's `live` in doubt ([`App::live_doubted`]): its box, since when,
+/// and the summary as it was then (the same one sent again is no news).
+pub struct LiveDoubt {
+    pub box_id: String,
+    pub since: Instant,
+    pub summary: SessionSummary,
 }
 
 pub enum Drag {
@@ -243,6 +257,12 @@ pub struct App {
     pub doc_resync: bool,
     /// When the document was last asked for (asked again after [`DOC_RETRY`]).
     pub doc_asked_at: Instant,
+    /// `DocOpen`s sent on this connection and not answered yet.
+    pub docs_asked: u32,
+    /// Changes kept by the last run wait to be sent (their file goes then).
+    pub unsent_pending: bool,
+    /// How many times the document was asked for again without an answer.
+    pub doc_retries: u32,
     /// When local document changes started waiting to be sent.
     pub dirty_at: Option<Instant>,
     /// When view or panel changes started waiting to be written.
@@ -268,9 +288,19 @@ pub struct App {
     pub last_focused_sub: Option<String>,
     pub sessions: HashMap<String, SessionSummary>,
     pub sessions_loaded: bool,
+    /// Sessions whose box's terminal ended here while their summary said
+    /// live (session id → doubt). Still live and unchanged after
+    /// [`LIVE_DOUBT`], the summary is stale (an update an older host lost
+    /// would keep the box "open elsewhere" until the next reconnect).
+    pub live_doubted: HashMap<String, LiveDoubt>,
     pub terms: HashMap<String, TermInfo>,
     pub views: HashMap<String, TermView>,
     pub launching: HashMap<String, Instant>,
+    /// Boxes whose launch was refused because their own previous run is
+    /// still closing: when it goes again ([`CLOSING_RETRY`]) …
+    pub closing_retry: HashMap<String, Instant>,
+    /// … and those sent again already (a second such refusal is shown).
+    pub closing_retried: HashSet<String>,
     pub preparing: HashSet<String>,
     pub node_errors: HashMap<String, String>,
     pub pending_prompts: HashMap<String, String>,
@@ -313,9 +343,19 @@ pub struct App {
     pub size_states: HashMap<String, crate::sizes::SizeState>,
     /// The terminal this client last claimed the size of (it has the keyboard here).
     pub last_claimed: Option<String>,
+    /// The terminal whose claim this client believes the service still
+    /// holds: only it is claimed again by a size repair (not after another
+    /// client took it, nor after a reconnect, until you act here).
+    pub claim_held: Option<String>,
+    /// The size each shown terminal had when this client last asked for
+    /// another: going back to it is a resize undone, not another client's.
+    pub resized_from: HashMap<String, (u16, u16)>,
     pub last_tracked: Vec<String>,
     pub stats: Option<ServiceStats>,
     pub stats_at: Instant,
+    /// Bytes read on the connection, and when that count last moved: a
+    /// connection that went silent before it ended suspects the tunnel.
+    pub heard: (u64, Instant),
     /// Keeps the terminal and session lists in step with the service's (`resync.rs`).
     pub resync: crate::resync::Resync,
     pub build_mismatch: bool,
@@ -429,15 +469,34 @@ impl App {
         let mut doc = opened.doc;
         let mut prefs = prefs.map(PrefsFile::new);
         let mut space = crate::spaces::Space::Canvas;
+        // Canvas changes the last run could not send: on top, sent with the first edit.
+        let mut restored = 0;
         if let Some(file) = prefs.as_mut() {
             let loaded = file.load().unwrap_or_else(|| ClientPrefs::of(&doc));
             space = loaded.space.as_deref().and_then(crate::spaces::Space::parse).unwrap_or_default();
             loaded.apply(&mut doc);
+            if let Some(unsent) = file.load_unsent().filter(|u| u.key == replica.key) {
+                restored = unsent.ops.iter().filter(|op| crate::sync::apply(&mut doc, op).is_ok()).count();
+                if restored == 0 {
+                    file.clear_unsent();
+                }
+            }
         }
-        let (info, info_error) = match backend.info() {
+        // The backend's facts as the last run got them, asked for again in
+        // the background (a remote service's round trip, or the local agents'
+        // lookup, no longer delays the first frame); asked now the first time.
+        let cached = prefs.as_ref().and_then(PrefsFile::load_info);
+        let refresh = cached.is_some();
+        let (info, info_error) = match cached.map_or_else(|| backend.info(), Ok) {
             Ok(info) => (info, None),
             Err(error) => (BackendInfo::default(), Some(format!("{error:#}"))),
         };
+        if !refresh
+            && info_error.is_none()
+            && let Some(file) = &prefs
+        {
+            let _ = file.save_info(&info);
+        }
         // A remote service is not asked here (one round trip less before the
         // first frame): the first automations load, in the background, says it.
         let automations_folder = if conn.remote { String::new() } else { backend.automations_dir(doc.automations_dir.clone()).unwrap_or_default() };
@@ -459,6 +518,9 @@ impl App {
             doc_request: (None, demo),
             doc_resync: false,
             doc_asked_at: Instant::now(),
+            docs_asked: 0,
+            unsent_pending: false,
+            doc_retries: 0,
             dirty_at: None,
             prefs_dirty_at: None,
             prefs,
@@ -475,9 +537,12 @@ impl App {
             last_focused_sub: None,
             sessions: HashMap::new(),
             sessions_loaded: false,
+            live_doubted: HashMap::new(),
             terms: HashMap::new(),
             views: HashMap::new(),
             launching: HashMap::new(),
+            closing_retry: HashMap::new(),
+            closing_retried: HashSet::new(),
             preparing: HashSet::new(),
             node_errors: HashMap::new(),
             pending_prompts: HashMap::new(),
@@ -508,9 +573,12 @@ impl App {
             pending_sizes: HashMap::new(),
             size_states: HashMap::new(),
             last_claimed: None,
+            claim_held: None,
+            resized_from: HashMap::new(),
             last_tracked: Vec::new(),
             stats: None,
             stats_at: Instant::now() - Duration::from_secs(60),
+            heard: (0, Instant::now()),
             resync: Default::default(),
             last_input_at: HashMap::new(),
             idle_check_at: Instant::now(),
@@ -595,7 +663,47 @@ impl App {
         }
         let differs = app.conn.remote_build_differs().map(str::to_owned);
         app.note_mixed_builds(differs);
+        if refresh {
+            app.refresh_backend_info();
+        }
+        if restored > 0 {
+            app.unsent_pending = true;
+            app.mark_dirty();
+            app.notify(format!("{restored} canvas change(s) not sent before Atelier closed last time go to the service now."), false);
+        }
         app
+    }
+
+    /// Asks the backend for its facts on a background thread; they replace
+    /// the copy the app started with when they come.
+    fn refresh_backend_info(&self) {
+        let (backend, tx) = (self.backend.clone(), self.app_tx.clone());
+        let _ = std::thread::Builder::new().name("backend-info".into()).spawn(move || {
+            let info = backend.info();
+            let _ = tx.send(AppEvent::Run(Box::new(move |app: &mut App| match info {
+                Ok(info) => app.set_backend_info(info),
+                Err(error) => app.notify(format!("The backend did not answer: {error:#}"), true),
+            })));
+        });
+    }
+
+    /// The backend's facts, as they are now (kept for the next start).
+    pub fn set_backend_info(&mut self, info: BackendInfo) {
+        if info == self.info {
+            return;
+        }
+        // The agent the configuration views show follows the machine's, unless chosen.
+        if self.config_agent == self.detected_agent && self.doc.default_agent.as_deref().and_then(AgentKind::parse).is_none() {
+            self.config_agent = info.default_agent;
+        }
+        self.detected_agent = info.default_agent;
+        self.installed_agents = info.installed.clone();
+        if let Some(file) = &self.prefs {
+            let _ = file.save_info(&info);
+        }
+        self.info = info;
+        self.side_rows_key = 0;
+        self.needs_draw = true;
     }
 
     // ---------- notices & persistence ----------
@@ -633,6 +741,27 @@ impl App {
         crate::notebook::flush(self);
         self.flush_doc();
         self.save_prefs();
+        self.save_unsent();
+    }
+
+    /// Canvas changes that cannot go now (offline, waiting for the canvas
+    /// again, the service restarting) are kept for the next start instead of
+    /// being lost with this client; those sent but not confirmed while
+    /// offline too (applying one twice changes nothing).
+    fn save_unsent(&mut self) {
+        let pending = !self.connected || self.doc_resync || self.restarting.is_some();
+        if !pending || self.replica.key == "detached" {
+            return;
+        }
+        let Some(file) = &self.prefs else { return };
+        let ops = crate::sync::diff(self.replica.synced(), &self.doc);
+        if ops.is_empty() {
+            return;
+        }
+        let unsent = crate::prefs::Unsent { key: self.replica.key.clone(), saved_ms: now_ms(), ops };
+        if let Err(error) = file.save_unsent(&unsent) {
+            self.save_error = Some(format!("cannot keep the canvas changes not sent yet: {error:#}"));
+        }
     }
 
     /// Sends local document changes to the service (as one edit).
@@ -651,6 +780,11 @@ impl App {
         if self.conn.tx.try_send(message).is_err() {
             // The edit is lost: start over from the service's document.
             self.request_doc();
+        } else if std::mem::take(&mut self.unsent_pending)
+            && let Some(file) = &self.prefs
+        {
+            // What the last run kept went with it.
+            file.clear_unsent();
         }
     }
 
@@ -676,18 +810,44 @@ impl App {
         self.doc_asked_at = Instant::now();
         let (path, demo) = self.doc_request.clone();
         let cwd = self.default_cwd.clone();
-        if !self.queue(ClientMsg::DocOpen { path, demo, cwd }) {
+        if self.queue(ClientMsg::DocOpen { path, demo, cwd }) {
+            self.docs_asked += 1;
+        } else {
             // Not sent (a full queue): asked again in a second.
-            self.doc_asked_at -= DOC_RETRY.saturating_sub(Duration::from_secs(1));
+            self.doc_asked_at -= self.doc_retry_wait().saturating_sub(Duration::from_secs(1));
         }
     }
 
-    /// The whole document from the service.
+    /// How long an answer to `DocOpen` is waited for before it is asked
+    /// again: [`DOC_RETRY`], twice that after a retry, and so on up to 8×
+    /// (a multi-MB canvas behind other bulk on a slow tunnel is only late).
+    fn doc_retry_wait(&self) -> Duration {
+        DOC_RETRY * 2u32.pow(self.doc_retries.min(3))
+    }
+
+    /// The whole document from the service: an answer to `DocOpen`, or sent
+    /// unasked when the service refused an edit of this client.
     fn on_doc(&mut self, key: String, version: u64, json: &str) {
+        let asked = self.docs_asked > 0;
+        self.docs_asked = self.docs_asked.saturating_sub(1);
+        // Another answer to a document asked for again (the first was only
+        // slow): nothing newer than this copy, and taking it would send the
+        // changes made since the first again, over newer ones (R2-D-09).
+        if asked && !self.doc_resync && key == self.replica.key && version <= self.replica.version {
+            return;
+        }
+        let refused = !asked && !self.doc_resync;
         self.doc_resync = false;
+        self.doc_retries = 0;
         match Opened::from_message(key, version, json) {
             Ok(opened) => {
-                self.replica.resync(&mut self.doc, opened);
+                // After a refusal the changes it was sent go (S8-05); otherwise
+                // those not confirmed are kept and sent again.
+                if refused {
+                    self.replica.resync_refused(&mut self.doc, opened);
+                } else {
+                    self.replica.resync(&mut self.doc, opened);
+                }
                 self.after_remote_change();
                 // Local changes kept on top go out now.
                 self.mark_dirty();
@@ -807,6 +967,14 @@ impl App {
         self.needs_draw = true;
         if self.reconnecting {
             return;
+        }
+        // Silent before it ended (this client's watchdog closed it): the tunnel
+        // is suspect, not the service, which closes what it ends (R2-D-02).
+        let silent = self.went_silent();
+        if let Some(crate::conn::ConnTarget::Server(server)) = &self.target
+            && silent
+        {
+            server.went_silent();
         }
         let Some(target) = self.target.clone() else {
             self.notify("The terminal service disconnected. Restart Atelier to reconnect; your canvas is saved.", true);
@@ -1708,6 +1876,8 @@ impl App {
     /// Starts a session box's terminal (see `interact.rs` for what may call it).
     pub fn launch(&mut self, id: &str) {
         let Some(node) = self.doc.node(id).cloned() else { return };
+        self.closing_retry.remove(id);
+        self.closing_retried.remove(id);
         let cwd = node
             .cwd
             .clone()
@@ -1786,6 +1956,7 @@ impl App {
     // ---------- service messages ----------
 
     pub fn on_service(&mut self, message: ServiceMsg) {
+        let drawn = !self.needs_draw;
         self.needs_draw = true;
         match message {
             ServiceMsg::Frame(frame) => {
@@ -1798,13 +1969,24 @@ impl App {
             }
             ServiceMsg::Terminals(infos) => {
                 self.terms_rev += 1;
+                // Terminals that were running here and ended (or are gone from a
+                // complete list): their sessions' `live` is doubted.
+                let mut ended: Vec<String> = Vec::new();
                 // After a reconnect the first list is complete: forget the rest.
-                if std::mem::take(&mut self.resync_terms) {
+                let whole = std::mem::take(&mut self.resync_terms);
+                if whole {
                     let known: HashSet<&str> = infos.iter().map(|i| i.id.as_str()).collect();
+                    ended.extend(self.terms.values().filter(|t| t.alive && !known.contains(t.id.as_str())).map(|t| t.id.clone()));
                     self.terms.retain(|id, _| known.contains(id.as_str()));
                     self.views.retain(|id, _| known.contains(id.as_str()));
                 }
                 for info in infos {
+                    // The state of an earlier run, overtaken by the newer one held
+                    // here, is never taken back (R2-A-08). A complete list is the
+                    // service's present (a restarted service's clock may differ).
+                    if !whole && self.terms.get(&info.id).is_some_and(|held| info.started_ms < held.started_ms) {
+                        continue;
+                    }
                     // Bells and notifications from a session ring the outer terminal
                     // (at most once a second).
                     if self.terms.get(&info.id).is_some_and(|old| info.bells > old.bells)
@@ -1814,16 +1996,31 @@ impl App {
                         self.platform.bell(&mut self.raw_out);
                     }
                     if info.alive {
-                        self.launching.remove(&info.id);
+                        let launched_here = self.launching.remove(&info.id).is_some();
                         // Started again (here, by another client or the restore):
-                        // its size is sent again, whatever an earlier run had.
+                        // its size is sent again, whatever an earlier run had. It
+                        // is claimed only when this window started it: one the
+                        // phone or the restore started stays theirs (R2-D-04).
                         if !self.owned_alive(&info.id) {
+                            let claimed = self.last_claimed.clone();
                             self.forget_size(&info.id);
+                            if !launched_here {
+                                self.last_claimed = claimed;
+                            }
+                            if !self.live_doubted.is_empty() {
+                                self.live_doubted.retain(|_, d| d.box_id != info.id);
+                            }
                         }
                     } else if self.launching.remove(&info.id).is_some() && info.exit_code != Some(0) {
                         self.notify(format!("Terminal exited immediately (code {:?}).", info.exit_code), true);
                     }
+                    if !info.alive && self.owned_alive(&info.id) {
+                        ended.push(info.id.clone());
+                    }
                     self.terms.insert(info.id.clone(), info);
+                }
+                for id in ended {
+                    self.doubt_live(&id);
                 }
                 // A reattaching client restores its tiles from the saved order.
                 if self.tile_slots.is_empty() {
@@ -1855,6 +2052,16 @@ impl App {
                     self.sessions.clear();
                 }
                 for summary in upsert {
+                    // News of a doubted session: believed again (the same summary sent
+                    // again, as a reconnect's whole list does, is no news).
+                    let mut summary = summary;
+                    if let Some(doubt) = self.live_doubted.get(&summary.id) {
+                        if doubt.summary != summary {
+                            self.live_doubted.remove(&summary.id);
+                        } else if doubt.since.elapsed() >= LIVE_DOUBT {
+                            summary.live = false;
+                        }
+                    }
                     self.sessions.insert(summary.id.clone(), summary);
                 }
                 for id in remove {
@@ -1893,7 +2100,16 @@ impl App {
                     self.notify(message, true);
                 }
             },
-            ServiceMsg::Stats(stats) => self.on_stats(stats),
+            ServiceMsg::Stats(stats) => {
+                // Every 3 s: the screen changes only when the status bar's figures
+                // (or the terminal list) do, not with every answer (S6-11).
+                let shown = |app: &App| (app.stats.as_ref().map(|s| (s.private_bytes >> 20, s.alive)), app.terms_rev);
+                let before = shown(self);
+                self.on_stats(stats);
+                if drawn && shown(self) == before {
+                    self.needs_draw = false;
+                }
+            }
             ServiceMsg::Subsession { parent, child, name, cwd } => self.link_subsession(&parent, &child, &name, &cwd),
             ServiceMsg::Bus { json } => self.on_bus(&json),
             ServiceMsg::BusEvent { json } => self.on_bus_event(&json),
@@ -1937,6 +2153,16 @@ impl App {
         self.launching.remove(id);
         // A resumed child that may not start goes again (with its own notice).
         if self.launch_refused(id, message) {
+            return;
+        }
+        // Its own previous run still closing (Enter right after it exited):
+        // started again once in a moment, preparing meanwhile, never shown as
+        // open elsewhere (R2-D-10).
+        if is_own_closing(message) && !self.closing_retried.contains(id) && self.doc.node(id).is_some() {
+            self.closing_retry.insert(id.to_owned(), Instant::now() + CLOSING_RETRY);
+            self.launching.insert(id.to_owned(), Instant::now());
+            let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_default();
+            self.notify(format!("“{name}”: its previous run is still closing; starting it again in a moment."), false);
             return;
         }
         let reason = launch_reason(message);
@@ -2262,16 +2488,83 @@ impl App {
         }
     }
 
+    /// Notes whether bytes came in since the last look (any change counts: a
+    /// new connection counts from 0).
+    fn note_heard(&mut self) {
+        let bytes = self.conn.wire.bytes_in.load(std::sync::atomic::Ordering::Relaxed);
+        if bytes != self.heard.0 {
+            self.heard = (bytes, Instant::now());
+        }
+    }
+
+    /// Nothing came in for most of the dead-after time (heartbeats come every
+    /// 2 s): the connection went silent rather than being closed.
+    pub fn went_silent(&mut self) -> bool {
+        self.note_heard();
+        self.heard.1.elapsed() >= self.conn_options.dead_after * 2 / 3
+    }
+
+    /// Box `id`'s terminal ended here: if its session's summary says it is
+    /// live, that is doubted from now on ([`LIVE_DOUBT`]).
+    fn doubt_live(&mut self, id: &str) {
+        let Some(node) = self.doc.node(id).filter(|n| n.kind == NodeKind::Session) else { return };
+        let Some(summary) = self.sessions.get(native_id(node)).filter(|s| s.live) else { return };
+        let doubt = LiveDoubt { box_id: id.to_owned(), since: Instant::now(), summary: summary.clone() };
+        self.live_doubted.insert(summary.id.clone(), doubt);
+    }
+
+    /// Doubted sessions still live and unchanged after [`LIVE_DOUBT`] are
+    /// taken as not live here (shown stopped or interrupted, not open
+    /// elsewhere); news of them, or their box running again, ends the doubt.
+    fn settle_doubts(&mut self) {
+        for (id, doubt) in &self.live_doubted {
+            if doubt.since.elapsed() >= LIVE_DOUBT
+                && !self.terms.get(&doubt.box_id).is_some_and(|t| t.alive)
+                && let Some(summary) = self.sessions.get_mut(id).filter(|s| s.live)
+            {
+                summary.live = false;
+                self.sessions_rev += 1;
+                self.needs_draw = true;
+            }
+        }
+    }
+
+    /// Launches refused while the box's own previous run was closing go
+    /// again once their moment came (tiles and the keyboard stay where they are).
+    fn retry_closing(&mut self) {
+        let now = Instant::now();
+        let due: Vec<String> = self.closing_retry.iter().filter(|(_, at)| now >= **at).map(|(id, _)| id.clone()).collect();
+        for id in due {
+            self.closing_retry.remove(&id);
+            self.launching.remove(&id);
+            if !self.connected || self.owned_alive(&id) || self.doc.node(&id).is_none() {
+                continue;
+            }
+            let (slots, focused, focus) = (self.tile_slots.clone(), self.focused_term.clone(), self.focus);
+            self.launch(&id);
+            (self.tile_slots, self.focused_term, self.focus) = (slots, focused, focus);
+            self.closing_retried.insert(id);
+        }
+    }
+
     pub fn on_tick(&mut self) {
         // Spinner frame: one step per 80 ms regardless of the housekeeping rate.
         static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
         let frame = self.frozen_tick.unwrap_or_else(|| (START.get_or_init(Instant::now).elapsed().as_millis() / 80) as usize);
         let spun = frame != self.tick;
         self.tick = frame;
+        self.note_heard();
+        if !self.live_doubted.is_empty() {
+            self.settle_doubts();
+        }
+        if !self.closing_retry.is_empty() {
+            self.retry_closing();
+        }
         if self.dirty_at.is_some_and(|t| t.elapsed() >= DOC_FLUSH) {
             self.flush_doc();
         }
-        if self.doc_resync && self.connected && self.doc_asked_at.elapsed() >= DOC_RETRY {
+        if self.doc_resync && self.connected && self.doc_asked_at.elapsed() >= self.doc_retry_wait() {
+            self.doc_retries += 1;
             self.request_doc();
         }
         if self.prefs_dirty_at.is_some_and(|t| t.elapsed() >= PREFS_FLUSH) {
@@ -2375,10 +2668,18 @@ pub fn launch_reason(message: &str) -> String {
 }
 
 /// The service refused a launch because the session already runs (another
-/// terminal, VS Code, another box): "open elsewhere", not a failure.
+/// terminal, VS Code, another box): "open elsewhere", not a failure. The
+/// box's own previous run still closing is not elsewhere.
 pub fn is_open_elsewhere(reason: &str) -> bool {
     let reason = reason.to_lowercase();
-    ["already running", "running elsewhere", "open elsewhere", "open in another", "running in another", "running inside"].iter().any(|p| reason.contains(p))
+    !is_own_closing(&reason) && ["already running", "running elsewhere", "open elsewhere", "open in another", "running in another", "running inside"].iter().any(|p| reason.contains(p))
+}
+
+/// The service refused a launch because the box's own previous run is still
+/// closing: "still closing in this box's own terminal …" (this build), "already
+/// running in this box's own terminal, which is still closing …" (a4bf57f).
+pub fn is_own_closing(reason: &str) -> bool {
+    reason.to_lowercase().contains("this box's own terminal")
 }
 
 /// Client-side frame statistics (`--perf`).
@@ -2668,6 +2969,170 @@ mod connection_tests {
         serde_json::from_value(serde_json::json!({ "id": id, "kind": "session", "name": id, "x": 0, "y": 0, "reviewed_ms": 1 })).unwrap()
     }
 
+    #[test]
+    fn live_left_over_from_a_terminal_that_ended_here_is_doubted_until_news_comes() {
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let doc = Doc { nodes: vec![node("s1"), node("s2")], ..Doc::default() };
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(doc), false, ".".into(), app_tx, None);
+        let live = |id: &str| SessionSummary { id: id.into(), live: true, tracked: true, updated_ms: 1, ..Default::default() };
+        app.on_service(ServiceMsg::Sessions { full: true, upsert: vec![live("s1"), live("s2")], remove: Vec::new() });
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "s1".into(), alive: true, started_ms: 1, ..Default::default() }]));
+        // Its terminal ends here; the summary saying it is no longer live never comes (an older host lost it).
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "s1".into(), alive: false, exit_code: Some(0), started_ms: 1, ..Default::default() }]));
+        let elsewhere = |app: &App, id: &str| app.live_elsewhere(app.doc.node(id).unwrap());
+        app.on_tick();
+        assert!(elsewhere(&app, "s1"), "not at once: the index may not have looked yet");
+        assert!(elsewhere(&app, "s2"), "a session that never ran here is not doubted");
+        app.live_doubted.get_mut("s1").unwrap().since -= LIVE_DOUBT;
+        app.on_tick();
+        assert!(!elsewhere(&app, "s1") && app.node_status(app.doc.node("s1").unwrap()) == Status::Stopped);
+        // The same summary again (a reconnect's whole list) is no news …
+        app.on_service(ServiceMsg::Sessions { full: true, upsert: vec![live("s1"), live("s2")], remove: Vec::new() });
+        assert!(!elsewhere(&app, "s1"));
+        // … a changed one is believed (opened elsewhere since).
+        app.on_service(ServiceMsg::Sessions { full: false, upsert: vec![SessionSummary { updated_ms: 2, ..live("s1") }], remove: Vec::new() });
+        assert!(elsewhere(&app, "s1") && app.live_doubted.is_empty());
+        // A terminal gone from the list after a reconnect (a restarted service) ended too.
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "s2".into(), alive: true, started_ms: 1, ..Default::default() }]));
+        app.reset_service_state();
+        app.on_service(ServiceMsg::Terminals(Vec::new()));
+        assert_eq!(app.node_status(app.doc.node("s2").unwrap()), Status::External, "live, not running here");
+        app.live_doubted.get_mut("s2").unwrap().since -= LIVE_DOUBT;
+        app.on_tick();
+        assert_eq!(app.node_status(app.doc.node("s2").unwrap()), Status::Stopped);
+        // Running again here: no doubt left.
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "s2".into(), alive: true, started_ms: 2, ..Default::default() }]));
+        assert!(app.live_doubted.is_empty());
+    }
+
+    #[test]
+    fn changes_made_offline_survive_a_quit_and_go_at_the_next_start() {
+        let home = std::env::temp_dir().join(format!("cc-unsent-{}", uuid::Uuid::new_v4()));
+        let prefs = crate::prefs::PrefsFile::path(&home, "default", "k");
+        let opened = || Opened { key: "k".into(), version: 3, path: String::new(), client: 7, doc: Doc { nodes: vec![node("a")], ..Doc::default() } };
+        let start = || {
+            let (conn, sent) = detached();
+            let (app_tx, _app_rx) = unbounded();
+            (App::new(conn, Arc::new(crate::rpc::Offline), opened(), false, ".".into(), app_tx, Some(prefs.clone())), sent)
+        };
+        let (mut app, sent) = start();
+        // Offline: the move cannot go; quitting keeps it.
+        app.connected = false;
+        app.doc.node_mut("a").unwrap().x = 12;
+        app.mark_dirty();
+        app.save_now();
+        assert!(edits(&sent).is_empty());
+        drop(app);
+        // The next start puts it back and sends it; then it is forgotten.
+        let (mut app, sent) = start();
+        assert_eq!(app.doc.node("a").unwrap().x, 12);
+        assert!(app.notice.as_ref().is_some_and(|n| n.text.contains("1 canvas change")));
+        app.flush_doc();
+        assert!(matches!(edits(&sent).as_slice(), [(3, ops)] if ops.len() == 1));
+        drop(app);
+        let (app, _sent) = start();
+        assert_eq!(app.doc.node("a").unwrap().x, 0, "sent once, not again");
+        // Connected with everything sent: nothing is kept.
+        let mut app = app;
+        app.save_now();
+        assert!(crate::prefs::PrefsFile::new(prefs.clone()).load_unsent().is_none());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn the_backends_facts_come_from_the_last_run_and_are_asked_again_in_the_background() {
+        use crate::rpc::{Request, Response};
+        struct Facts(std::sync::Mutex<(BackendInfo, u32)>);
+        impl Backend for Facts {
+            fn call(&self, request: Request) -> anyhow::Result<Response> {
+                let mut facts = self.0.lock().unwrap();
+                match request {
+                    Request::Info => {
+                        facts.1 += 1;
+                        Ok(Response::Info(facts.0.clone()))
+                    }
+                    other => Err(anyhow::anyhow!("no {}", other.name())),
+                }
+            }
+        }
+        let home = std::env::temp_dir().join(format!("cc-info-{}", uuid::Uuid::new_v4()));
+        let prefs = crate::prefs::PrefsFile::path(&home, "default", "k");
+        let first = BackendInfo { home: "/h".into(), installed: vec![AgentKind::Copilot], ..Default::default() };
+        let backend = Arc::new(Facts(std::sync::Mutex::new((first.clone(), 0))));
+        let start = || {
+            let (conn, _sent) = detached();
+            let (app_tx, app_rx) = unbounded();
+            let app = App::new(conn, backend.clone(), Opened::detached(Doc::default()), false, ".".into(), app_tx, Some(prefs.clone()));
+            (app, app_rx)
+        };
+        // The first start asks at once and keeps the answer.
+        let (app, _events) = start();
+        assert_eq!((app.info.clone(), backend.0.lock().unwrap().1), (first.clone(), 1));
+        drop(app);
+        // The next one starts with that copy and asks again in the background.
+        let now = BackendInfo { installed: vec![AgentKind::Copilot, AgentKind::Claude], ..first.clone() };
+        backend.0.lock().unwrap().0 = now.clone();
+        let (mut app, events) = start();
+        assert_eq!(app.info, first, "no round trip before the first frame");
+        let event = events.recv_timeout(std::time::Duration::from_secs(5)).expect("asked in the background");
+        app.on_app_event(event);
+        assert_eq!((app.info.clone(), app.installed_agents.clone()), (now.clone(), now.installed.clone()));
+        assert_eq!(crate::prefs::PrefsFile::new(prefs.clone()).load_info(), Some(now), "kept for the next start");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn the_services_figures_redraw_only_when_they_change() {
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        let stats = |mb: u64, alive: u32| ServiceMsg::Stats(ServiceStats { private_bytes: mb << 20, alive, terminals: alive, ..Default::default() });
+        app.resync_terms = false;
+        app.on_service(stats(100, 0));
+        assert!(app.needs_draw, "first figures");
+        app.needs_draw = false;
+        app.on_service(stats(100, 0));
+        assert!(!app.needs_draw, "the same figures: no redraw every 3 s (S6-11)");
+        app.on_service(stats(140, 0));
+        assert!(app.needs_draw, "the status bar changes");
+    }
+
+    #[test]
+    fn an_earlier_runs_state_never_overwrites_a_newer_one() {
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        let info = |alive: bool, started_ms: u64| TermInfo { id: "t".into(), alive, started_ms, exit_code: (!alive).then_some(0), ..Default::default() };
+        app.on_service(ServiceMsg::Terminals(vec![info(true, 200)]));
+        // The first run's exit, read before the relaunch and sent after it (R2-A-08).
+        app.on_service(ServiceMsg::Terminals(vec![info(false, 100)]));
+        assert!(app.owned_alive("t"), "the relaunch stays alive");
+        app.on_service(ServiceMsg::Terminals(vec![info(false, 200)]));
+        assert!(!app.owned_alive("t"), "its own exit is taken");
+        app.on_service(ServiceMsg::Terminals(vec![info(true, 300)]));
+        assert!(app.owned_alive("t"));
+        // A reconnect's whole list is the service's present, whatever its clock says.
+        app.reset_service_state();
+        app.on_service(ServiceMsg::Terminals(vec![info(true, 50)]));
+        assert_eq!(app.terms.get("t").map(|t| t.started_ms), Some(50));
+    }
+
+    #[test]
+    fn a_connection_that_went_silent_is_told_from_one_that_was_closed() {
+        use std::sync::atomic::Ordering;
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        app.conn.wire.bytes_in.store(500, Ordering::Relaxed);
+        app.on_tick();
+        assert!(!app.went_silent(), "bytes just came");
+        app.heard.1 -= app.conn_options.dead_after;
+        assert!(app.went_silent(), "nothing for the dead-after time: the watchdog closed it");
+        app.conn.wire.bytes_in.fetch_add(40, Ordering::Relaxed);
+        assert!(!app.went_silent(), "a heartbeat since: the far side closed it");
+    }
+
     fn edits(sent: &Receiver<ClientMsg>) -> Vec<(u64, Vec<crate::sync::Op>)> {
         sent.try_iter().filter_map(|m| if let ClientMsg::DocEdit { base, ops_json, .. } = m { Some((base, serde_json::from_str(&ops_json).unwrap())) } else { None }).collect()
     }
@@ -2732,6 +3197,41 @@ mod connection_tests {
         // Save errors from the service are shown.
         app.on_service(ServiceMsg::DocSaved { key: "k".into(), version: 9, error: Some("disk full".into()) });
         assert_eq!(app.save_error.as_deref(), Some("the service cannot save the canvas: disk full"));
+    }
+
+    #[test]
+    fn a_slow_document_asked_for_twice_sends_no_edit_twice_and_a_refused_edit_is_not_sent_again() {
+        let (conn, sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let doc = Doc { nodes: vec![node("a"), node("b")], ..Doc::default() };
+        let opened = Opened { key: "k".into(), version: 5, path: String::new(), client: 7, doc: doc.clone() };
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), opened, false, ".".into(), app_tx, None);
+        let reply = serde_json::to_string(&crate::sync::DocReply { path: "p".into(), client: 7, doc: Some(doc), error: None }).unwrap();
+        // Asked for, not there after 10 s: asked again, and later only after a longer wait.
+        app.request_doc();
+        app.doc_asked_at -= DOC_RETRY;
+        app.on_tick();
+        assert_eq!(sent.try_iter().filter(|m| matches!(m, ClientMsg::DocOpen { .. })).count(), 2);
+        app.doc_asked_at = Instant::now() - DOC_RETRY;
+        app.on_tick();
+        assert_eq!(sent.try_iter().filter(|m| matches!(m, ClientMsg::DocOpen { .. })).count(), 0, "the next wait is longer");
+        // The first answer comes; an edit goes; the second answer (made before the edit) comes.
+        app.on_service(ServiceMsg::Doc { key: "k".into(), version: 5, json: reply.clone() });
+        app.doc.node_mut("a").unwrap().x = 4;
+        app.flush_doc();
+        assert_eq!(edits(&sent).len(), 1);
+        app.on_service(ServiceMsg::Doc { key: "k".into(), version: 5, json: reply.clone() });
+        app.flush_doc();
+        assert!(edits(&sent).is_empty(), "the late copy is dropped: the edit is not sent again (R2-D-09)");
+        assert_eq!((app.replica.in_flight(), app.doc.node("a").unwrap().x), (1, 4));
+        // That edit is refused: the service sends the canvas unasked. The
+        // change goes (S8-05), and one not sent yet stays and goes alone.
+        app.doc.node_mut("b").unwrap().y = 2;
+        app.on_service(ServiceMsg::Doc { key: "k".into(), version: 5, json: reply });
+        assert_eq!((app.replica.in_flight(), app.doc.node("a").unwrap().x, app.doc.node("b").unwrap().y), (0, 0, 2));
+        app.flush_doc();
+        let resent = edits(&sent);
+        assert!(matches!(resent.as_slice(), [(5, ops)] if matches!(ops.as_slice(), [crate::sync::Op::NodeFields(n, f)] if n.id == "b" && *f == ["y"])), "{resent:?}");
     }
 
     #[test]

@@ -117,9 +117,15 @@ impl App {
         self.last_sizes.clear();
         self.pending_sizes.clear();
         self.size_states.clear();
-        self.last_claimed = None;
+        // The new connection's claim is gone, and a reconnect is no reason to
+        // take the terminal from a phone that has it: the size goes out as a
+        // wish, the next click, key or return to the window claims (R2-E-09).
+        self.claim_held = None;
+        self.resized_from.clear();
         self.last_tracked.clear();
         self.routing_sent.clear();
+        // What was asked on the previous connection is not answered on this one.
+        self.docs_asked = 0;
         self.resync_terms = true;
         // Launches the previous connection asked for are the service's now (a
         // restarted one resumes what it ran): never "preparing" forever.

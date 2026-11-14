@@ -42,8 +42,13 @@ const PROBE_EVERY: Duration = Duration::from_millis(500);
 /// connection to its port, or not a byte back) before it is restarted.
 const RESTART_AFTER_FAILURES: u32 = 2;
 /// Connections closed before a byte came back (the service restarting, or a
-/// forwarder whose relay is gone) restart the child only after this long.
+/// forwarder whose relay is gone) restart the child only after this long …
 const RESTART_AFTER_CLOSES: Duration = Duration::from_secs(45);
+/// … unless the tunnel is suspect: then they count as failures. It is for
+/// this long after a connection through it went silent (this client's
+/// watchdog closed it: a service that shuts down closes its connections), and
+/// while the child said its relay connection was lost (R2-D-02).
+const SUSPECT_FOR: Duration = Duration::from_secs(60);
 /// A child younger than this is never restarted (it may still be reaching the relay).
 const MIN_LIFE: Duration = Duration::from_secs(10);
 /// Output lines kept for error messages.
@@ -113,10 +118,25 @@ impl Server {
 
     /// A connection through the current address was closed before a byte
     /// came back: the service restarting behind a working tunnel, or (when
-    /// it lasts) a forwarder that lost its relay.
+    /// it lasts) a forwarder that lost its relay. While the tunnel is suspect
+    /// ([`SUSPECT_FOR`]) it counts as a failure.
     pub fn closed_unheard(&self) {
         if let Some(tunnel) = &self.tunnel {
-            lock(&tunnel.state).closes_since.get_or_insert_with(Instant::now);
+            let mut state = lock(&tunnel.state);
+            state.closes_since.get_or_insert_with(Instant::now);
+            if state.suspect() {
+                state.failures += 1;
+            }
+        }
+    }
+
+    /// A connection through the tunnel ended after it went silent (this
+    /// client's watchdog closed it): the relay rather than the service is
+    /// suspect, so for a while connections closed unheard restart the child
+    /// as failures do, not after [`RESTART_AFTER_CLOSES`].
+    pub fn went_silent(&self) {
+        if let Some(tunnel) = &self.tunnel {
+            lock(&tunnel.state).silent_at = Some(Instant::now());
         }
     }
 
@@ -127,6 +147,10 @@ impl Server {
             let mut state = lock(&tunnel.state);
             state.failures = 0;
             state.closes_since = None;
+            state.silent_at = None;
+            if let Some(running) = &state.child {
+                lock(&running.output).relay_lost = false;
+            }
         }
     }
 
@@ -187,11 +211,18 @@ struct TunnelState {
     failures: u32,
     /// Since when connections have closed before a byte came back.
     closes_since: Option<Instant>,
+    /// When a connection through the child last ended in silence.
+    silent_at: Option<Instant>,
     /// Connections through the child that are up.
     open: usize,
 }
 
 impl TunnelState {
+    /// The relay rather than the service is suspect (see [`SUSPECT_FOR`]).
+    fn suspect(&self) -> bool {
+        self.silent_at.is_some_and(|at| at.elapsed() < SUSPECT_FOR) || self.child.as_ref().is_some_and(|r| lock(&r.output).relay_lost)
+    }
+
     /// The child is restarted: it died, or nothing gets through it while no
     /// connection through it is up and it had time to reach the relay.
     fn restart_due(&mut self, min_life: Duration) -> bool {
@@ -207,6 +238,10 @@ struct Output {
     lines: VecDeque<String>,
     /// (local host, local port, tunnel port) from "Forwarding from …" lines.
     forwards: Vec<(String, u16, u16)>,
+    /// Once it forwarded, the child said its relay connection was lost or
+    /// is being reconnected ([`relay_trouble`]); cleared when a connection
+    /// gets through again.
+    relay_lost: bool,
 }
 
 struct Running {
@@ -299,6 +334,21 @@ fn exit_hint(tail: &str) -> &'static str {
     }
 }
 
+/// A line in which the child says its connection to the relay was lost or is
+/// being made again (wording not pinned down: any such line makes closes
+/// count as failures, which at worst restarts the child a little early).
+/// Lines about one forwarded connection are not about the relay.
+fn relay_trouble(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let relay_word = ["lost", "clos", "drop", "disconnect", "error", "fail"].iter().any(|w| lower.contains(w));
+    lower.contains("reconnect")
+        || lower.contains("disconnected from")
+        || lower.contains("connection lost")
+        || lower.contains("lost connection")
+        || lower.contains("session closed")
+        || (lower.contains("relay") && relay_word)
+}
+
 fn read_lines(source: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
     std::thread::Builder::new()
         .name("devtunnel-output".into())
@@ -308,6 +358,8 @@ fn read_lines(source: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
                 let mut output = lock(&output);
                 if let Some(forward) = parse_forward(&line) {
                     output.forwards.push(forward);
+                } else if !output.forwards.is_empty() && relay_trouble(&line) {
+                    output.relay_lost = true;
                 }
                 output.lines.push_back(line);
                 if output.lines.len() > KEEP_LINES {
@@ -351,6 +403,7 @@ impl Tunnel {
             state.child = None;
             state.failures = 0;
             state.closes_since = None;
+            state.silent_at = None;
         }
         if state.child.is_none() {
             state.child = Some(self.spawn()?);
@@ -424,6 +477,12 @@ mod tests {
         assert!(exit_hint("Login required.").contains("devtunnel user login -g"));
         assert!(exit_hint("Tunnel not found: atelier").contains("devtunnel list"));
         assert_eq!(exit_hint("something else"), "");
+        for line in ["Connection to the tunnel relay was lost.", "Reconnecting to tunnel atelier.usw2...", "Disconnected from tunnel relay", "SSH session closed"] {
+            assert!(relay_trouble(line), "{line}");
+        }
+        for line in ["Connected to tunnel: atelier.usw2", "Connection to port 47600 is E2E encrypted between tunnel client and tunnel host.", "Ready to accept connections for tunnel: atelier.usw2."] {
+            assert!(!relay_trouble(line), "{line}");
+        }
     }
 
     #[test]
@@ -500,8 +559,45 @@ mod tests {
         let second = server.tunnel_pid().expect("restarted");
         assert_ne!(second, first, "a child whose connections keep failing is restarted");
         assert!(!canvas_sys::process::alive(first));
+        let age = |server: &Server| {
+            if let Some(tunnel) = &server.tunnel {
+                lock(&tunnel.state).child.as_mut().expect("running").started -= MIN_LIFE;
+            }
+        };
+        // A connection that went silent (the client's watchdog), then closes:
+        // the relay is suspect, so two closes restart the child (R2-D-02).
+        server.succeeded();
+        age(&server);
+        server.went_silent();
+        server.closed_unheard();
+        server.address().unwrap();
+        assert_eq!(server.tunnel_pid(), Some(second), "one close is not enough");
+        server.closed_unheard();
+        server.address().unwrap();
+        let third = server.tunnel_pid().expect("restarted");
+        assert_ne!(third, second, "closes after a silent end restart the child at once");
+        // A clean end (the service closed it) leaves the 45 s rule: see above.
         server.stop_tunnel();
-        assert!(!canvas_sys::process::alive(second), "stopping kills the child");
+        assert!(!canvas_sys::process::alive(third), "stopping kills the child");
+        // The child says its relay connection was lost: closes count as failures too.
+        let relay = tunnel(&os(
+            "echo Forwarding from 127.0.0.1:5555 to host port 47600.& echo Connection to the tunnel relay was lost. Reconnecting...& ping -n 30 127.0.0.1",
+            "echo Forwarding from 127.0.0.1:5555 to host port 47600.; echo Connection to the tunnel relay was lost. Reconnecting...; sleep 30",
+        ));
+        relay.address().unwrap();
+        let lost = relay.tunnel_pid().expect("running");
+        let said = |server: &Server| server.tunnel.as_ref().is_some_and(|t| lock(&t.state).child.as_ref().is_some_and(|r| lock(&r.output).relay_lost));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !said(&relay) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(said(&relay), "the relay line was read");
+        age(&relay);
+        relay.closed_unheard();
+        relay.closed_unheard();
+        relay.address().unwrap();
+        assert_ne!(relay.tunnel_pid(), Some(lost), "a child that lost its relay is restarted after two closes");
+        relay.stop_tunnel();
         let failing = tunnel(&os("echo Login required.& exit 3", "echo Login required.; exit 3"));
         let error = failing.address().unwrap_err().to_string();
         assert!(error.contains("Login required") && error.contains("devtunnel user login -g"), "{error}");

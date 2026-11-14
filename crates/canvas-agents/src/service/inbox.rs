@@ -33,10 +33,14 @@ pub(super) fn run(shared: Arc<Shared>) {
         if shared.shutting_down.load(Ordering::Relaxed) {
             return;
         }
-        let done = {
-            let routing = lock(&shared.routing);
-            lock(&shared.reports).ingest(&routing, now_ms())
-        };
+        // Nothing spooled (nearly always): no lock is taken. Else the routing
+        // is copied (launches and the bus take its lock) and the store is held
+        // only while reports are stored (R2-C-02).
+        if !crate::reports::Store::spooled(&home) {
+            continue;
+        }
+        let routing = lock(&shared.routing).clone();
+        let done = lock(&shared.reports).ingest(&routing, now_ms());
         for report in &done.stored {
             log(&shared.instance, &format!("report {} stored: {:?} from {} ({}, {}, {} bytes)", report.id, report.title, report.source_name, report.format.label(), report.kind, report.size));
         }

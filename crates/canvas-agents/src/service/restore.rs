@@ -415,6 +415,43 @@ impl Restore {
     pub fn entries(&self) -> Vec<Entry> {
         lock(&self.inner).set.entries.values().cloned().collect()
     }
+
+    /// A box still waiting for its turn in the restore was removed from the
+    /// canvas or stopped: it is not resumed when its turn comes, and leaves
+    /// the running set (R2-C-01: it was resumed anyway, unseen, with the
+    /// note to continue its task, and kept across every restart). One
+    /// already resumed is left alone (it runs: Stop ends it as usual).
+    /// Answers whether it was waiting.
+    pub fn cancel(&self, id: &str, why: &str) -> bool {
+        let mut inner = lock(&self.inner);
+        let waiting = !inner.pending.contains_key(id) && inner.view.as_ref().is_some_and(|v| v.resuming.iter().any(|r| r == id));
+        if !waiting {
+            return false;
+        }
+        inner.set.entries.remove(id);
+        inner.dirty = true;
+        if let Some(view) = inner.view.as_mut() {
+            view.resuming.retain(|r| r != id);
+            view.interrupted.push(RestoreSkip { id: id.to_owned(), why: why.to_owned() });
+        }
+        true
+    }
+}
+
+/// A client's restore request (`{"action": "restore", "op": "cancel", "id"}`:
+/// a box waiting for its turn that you stopped); false when `value` is none.
+/// Older services ignore it.
+pub(super) fn action(shared: &Shared, value: &serde_json::Value) -> bool {
+    if value["action"].as_str() != Some("restore") {
+        return false;
+    }
+    if value["op"].as_str() == Some("cancel")
+        && let Some(id) = value["id"].as_str()
+        && shared.restore.cancel(id, "stopped before its turn")
+    {
+        log(&shared.instance, &format!("restore: {id} stopped before its turn; not resumed"));
+    }
+    true
 }
 
 /// Terminal facts the running set is kept from.
@@ -562,11 +599,13 @@ impl Queue {
     /// Starts what may start now: at most `RESTORE_AT_ONCE` starting at
     /// once (`starting` tells whether a launch still is), `RESTORE_GAP_MS`
     /// apart. Answers the entries whose turn came, with what happened.
-    fn step(&mut self, now: u64, start: &mut dyn FnMut(&Entry) -> Outcome, starting: &dyn Fn(&str, u64) -> bool) -> Vec<(String, Outcome)> {
+    /// One a client shows goes first (`shown`: it starts anyway; nothing new is started by it).
+    fn step(&mut self, now: u64, start: &mut dyn FnMut(&Entry) -> Outcome, starting: &dyn Fn(&str, u64) -> bool, shown: &HashSet<String>) -> Vec<(String, Outcome)> {
         self.starting.retain(|(id, at)| starting(id, *at));
         let mut done = Vec::new();
         while self.starting.len() < RESTORE_AT_ONCE && (self.last_launch == 0 || now.saturating_sub(self.last_launch) >= RESTORE_GAP_MS) {
-            let Some(index) = self.waiting.iter().position(|w| w.not_before <= now) else { break };
+            let due = |w: &Waiting| w.not_before <= now;
+            let Some(index) = self.waiting.iter().position(|w| due(w) && shown.contains(&w.entry.id)).or_else(|| self.waiting.iter().position(due)) else { break };
             let waiting = self.waiting.remove(index);
             let id = waiting.entry.id.clone();
             match start(&waiting.entry) {
@@ -637,7 +676,8 @@ pub(super) fn run(shared: Arc<Shared>) {
         }
         if !queue.is_done() {
             let now = now_ms();
-            for (id, outcome) in queue.step(now, &mut |entry| restore_one(&shared, entry), &|id, launched| still_starting(&shared, id, launched, now)) {
+            let (began, shown) = (queue.began, shared.visible());
+            for (id, outcome) in queue.step(now, &mut |entry| restore_one(&shared, entry, began), &|id, launched| still_starting(&shared, id, launched, now), &shown) {
                 match outcome {
                     Outcome::Resumed => resumed += 1,
                     Outcome::Skipped(_) => not_resumed += 1,
@@ -658,14 +698,32 @@ pub(super) fn run(shared: Arc<Shared>) {
 }
 
 /// Whether a resumed terminal is still starting: it runs, and has not yet
-/// printed and then been quiet for `STARTING_QUIET_MS` (at most `STARTING_MAX_MS`).
+/// printed and then been quiet for `STARTING_QUIET_MS`; a Copilot session
+/// also until its history says it has loaded (a `session.resume` or
+/// `session.start` after the launch: it prints its banner, then loads a
+/// large history for seconds without a word, R2-C-11). At most `STARTING_MAX_MS`.
 fn still_starting(shared: &Shared, id: &str, launched: u64, now: u64) -> bool {
     if now.saturating_sub(launched) >= STARTING_MAX_MS {
         return false;
     }
     let Some(term) = lock(&shared.terms).get(id).cloned() else { return false };
+    if !term.alive.load(Ordering::Acquire) {
+        return false;
+    }
     let output = term.last_output_ms.load(Ordering::Relaxed);
-    term.alive.load(Ordering::Acquire) && (output == 0 || now.saturating_sub(output) < STARTING_QUIET_MS)
+    let copilot = lock(&shared.agent_terms).get(id) == Some(&AgentKind::Copilot);
+    let history = || {
+        let native = shared.native_of(id);
+        lock(&shared.sessions).get(&native).map(|s| s.last_event_ms)
+    };
+    starting_by(output, now, copilot.then(history).flatten(), term.started_ms)
+}
+
+/// [`still_starting`]'s rule: no output yet or output within the quiet
+/// time, or (a Copilot session's history, `last_event`) nothing written to
+/// its history since it started (`started`).
+fn starting_by(output: u64, now: u64, last_event: Option<u64>, started: u64) -> bool {
+    output == 0 || now.saturating_sub(output) < STARTING_QUIET_MS || last_event.is_some_and(|at| at < started)
 }
 
 impl Restore {
@@ -697,11 +755,22 @@ impl Restore {
     }
 }
 
-/// Starts one recorded terminal again through the normal launch path.
-fn restore_one(shared: &Shared, entry: &Entry) -> Outcome {
+/// Starts one recorded terminal again through the normal launch path
+/// (`began`: when the restore began).
+fn restore_one(shared: &Shared, entry: &Entry, began: u64) -> Outcome {
     let id = &entry.id;
     // You started it first (or it is being started now).
     if shared.running_or_launching(id) {
+        // Started by a client since the restore began ("Update service"
+        // resumes every terminal it had at once): a busy one still gets its
+        // note once it has settled (R2-C-06).
+        let started = lock(&shared.terms).get(id).filter(|t| t.alive.load(Ordering::Acquire)).map(|t| t.started_ms);
+        let agent = agent_of(&entry.launch).is_some();
+        if agent && !entry.doing.idle() && started.is_none_or(|at| at >= began) {
+            log(&shared.instance, &format!("restore: {id} was started by a client meanwhile (it was {}); a note follows once it has settled", describe(&entry.doing)));
+            lock(&shared.restore.inner).pending.insert(id.clone(), Pending { doing: entry.doing.clone(), launched_ms: started.unwrap_or_else(now_ms) });
+            return Outcome::Resumed;
+        }
         log(&shared.instance, &format!("restore: {id} already runs"));
         return Outcome::Running;
     }
@@ -1068,7 +1137,7 @@ mod tests {
                 starting.borrow_mut().insert(e.id.clone());
                 Outcome::Resumed
             };
-            queue.step(now, &mut start, &|id, _| starting.borrow().contains(id)).len()
+            queue.step(now, &mut start, &|id, _| starting.borrow().contains(id), &HashSet::new()).len()
         };
         let t = 1_000_000;
         assert_eq!(step(&mut queue, t), 1, "one at once");
@@ -1085,6 +1154,49 @@ mod tests {
         }
         assert_eq!(launched, ["busy", "busy2", "recent", "mid", "older", "old"]);
         assert!(queue.is_done());
+    }
+
+    #[test]
+    fn a_box_a_client_shows_goes_first_and_one_removed_before_its_turn_is_not_resumed() {
+        let t = 1_000_000;
+        let mut queue = Queue::new(vec![entry("a", true, 3), entry("b", false, 2), entry("c", false, 1)], t, t);
+        let mut launched = Vec::new();
+        let mut start = |e: &Entry| {
+            launched.push(e.id.clone());
+            Outcome::Resumed
+        };
+        let shown: HashSet<String> = ["c".to_owned()].into();
+        queue.step(t, &mut start, &|_, _| false, &shown);
+        assert_eq!(launched, ["c"], "shown in a window: it goes first (it would start anyway)");
+        // A box removed (or stopped) while it waits: cancelled, its turn finds it gone (R2-C-01).
+        let home = home();
+        let r = Restore::new(&home, "default");
+        lock(&r.inner).view = Some(RestoreView { resuming: vec!["a".into(), "b".into()], ..Default::default() });
+        for id in ["a", "b"] {
+            lock(&r.inner).set.entries.insert(id.into(), entry(id, false, 1));
+        }
+        lock(&r.inner).pending.insert("a".into(), Pending { doing: Doing::default(), launched_ms: t });
+        assert!(!r.cancel("a", "removed from the canvas before its turn"), "resumed already (settling): it runs, Stop ends it");
+        assert!(r.cancel("b", "removed from the canvas before its turn"));
+        assert!(!r.still_recorded(&entry("b", false, 1)), "its turn: gone, never launched");
+        assert_eq!(r.entries().iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["a"], "not kept for the next restart");
+        let view = r.view().unwrap();
+        assert_eq!((view.resuming, view.interrupted.iter().map(|s| (s.id.as_str(), s.why.as_str())).collect::<Vec<_>>()), (vec!["a".to_owned()], vec![("b", "removed from the canvas before its turn")]));
+        assert!(!r.cancel("b", "again"), "once");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_resumed_copilot_counts_as_starting_until_its_history_says_it_loaded() {
+        let (started, now) = (10_000, 20_000);
+        // Printed its banner, quiet for 5 s: done starting by output alone.
+        assert!(!starting_by(15_000, now, None, started));
+        // Copilot's history has nothing since the launch (it is loading a large session): still starting (R2-C-11).
+        assert!(starting_by(15_000, now, Some(9_000), started));
+        // `session.resume` written: loaded.
+        assert!(!starting_by(15_000, now, Some(12_000), started));
+        assert!(starting_by(0, now, Some(12_000), started), "nothing printed yet");
+        assert!(starting_by(19_000, now, Some(12_000), started), "printing");
     }
 
     #[test]
@@ -1105,7 +1217,7 @@ mod tests {
         let none = |_: &str, _: u64| false;
         let mut done = Vec::new();
         for i in 0..20 {
-            done.extend(queue.step(t + i * 1_000, &mut start, &none));
+            done.extend(queue.step(t + i * 1_000, &mut start, &none, &HashSet::new()));
         }
         assert_eq!(done, [("b".to_owned(), Outcome::Resumed), ("a".to_owned(), Outcome::Resumed)], "b goes meanwhile, a once its old CLI is gone");
         // One that stays live: given up after a while, with who has it.
@@ -1113,7 +1225,7 @@ mod tests {
         let mut live = |_: &Entry| Outcome::Live("already running in VS Code (Code.exe pid 9): close it there first".into());
         let mut done = Vec::new();
         for i in 0..40 {
-            done.extend(queue.step(t + i * 1_000, &mut live, &none));
+            done.extend(queue.step(t + i * 1_000, &mut live, &none, &HashSet::new()));
         }
         assert_eq!(done, [("c".to_owned(), Outcome::Skipped("its session is already running in VS Code (Code.exe pid 9): close it there first".into()))]);
         assert!(queue.is_done());

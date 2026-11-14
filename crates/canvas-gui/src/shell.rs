@@ -675,6 +675,27 @@ impl Shell {
     }
 }
 
+/// The forwarder's side of a window's service wake-up: whether to post one
+/// for the message it just queued (none is posted while one waits, a drain
+/// runs, or leftovers wait for `tick`).
+fn wake_due(pending: &AtomicBool) -> bool {
+    !pending.swap(true, Ordering::AcqRel)
+}
+
+/// The drain's side: the next queued message. The flag is cleared only once
+/// the queue is seen empty, then the queue is looked at once more: a message
+/// queued in between found the flag set and posted nothing (both sides swap,
+/// so the forwarder's message is visible once its swap is).
+fn take_service<T>(rx: &Receiver<T>, pending: &AtomicBool) -> Option<T> {
+    if let Ok(message) = rx.try_recv() {
+        return Some(message);
+    }
+    pending.swap(false, Ordering::AcqRel);
+    let message = rx.try_recv().ok()?;
+    pending.store(true, Ordering::Release);
+    Some(message)
+}
+
 impl Win {
     fn new(opened: crate::Opened, window: Arc<Window>, surface: Surface, grid: Grid, proxy: &EventLoopProxy<UserEvent>) -> Self {
         let crate::Opened { index, app, app_rx, platform } = opened;
@@ -777,7 +798,7 @@ impl Win {
                 if tx.send((generation, message)).is_err() {
                     return;
                 }
-                if !pending.swap(true, Ordering::AcqRel) && proxy.send_event(UserEvent::Service(index)).is_err() {
+                if wake_due(&pending) && proxy.send_event(UserEvent::Service(index)).is_err() {
                     return;
                 }
             }
@@ -789,13 +810,15 @@ impl Win {
     /// left waits for `tick`, after input and a frame (`svc_more`). Posting
     /// another wake-up instead would come back before any keystroke on
     /// Windows (posted messages are dispatched before input, and winit drains
-    /// the queue before `AboutToWait`, where frames are drawn).
+    /// the queue before `AboutToWait`, where frames are drawn). The pending
+    /// flag stays set while this runs and while leftovers wait, so messages
+    /// that keep arriving post no wake-up either ([`take_service`], R2-D-01).
     fn drain_service(&mut self) {
         self.svc_more = false;
-        self.svc_pending.store(false, Ordering::Release);
+        self.svc_pending.store(true, Ordering::Release);
         let started = Instant::now();
         let focused = self.app.focused_term.clone();
-        while let Ok((generation, message)) = self.svc_rx.try_recv() {
+        while let Some((generation, message)) = take_service(&self.svc_rx, &self.svc_pending) {
             if generation != self.svc_gen {
                 continue;
             }
@@ -827,7 +850,8 @@ impl Win {
                 }
             }
             if started.elapsed() >= SERVICE_BUDGET {
-                // Leftovers after input and drawing (`tick`).
+                // Leftovers after input and drawing (`tick`); the flag stays
+                // set, so the forwarder posts nothing meanwhile.
                 self.svc_more = true;
                 break;
             }
@@ -2419,6 +2443,78 @@ impl ApplicationHandler<UserEvent> for Shell {
         self.after_input(event_loop);
         if let Some(wake) = wake {
             event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The forwarder: queue, then post a wake-up when one is due.
+    fn forward(tx: &Sender<u32>, pending: &AtomicBool, posts: &mut u32, message: u32) {
+        tx.send(message).unwrap();
+        if wake_due(pending) {
+            *posts += 1;
+        }
+    }
+
+    #[test]
+    fn messages_that_keep_coming_post_no_wake_up_while_leftovers_wait() {
+        let (tx, rx) = unbounded();
+        let pending = AtomicBool::new(false);
+        let mut posts = 0;
+        forward(&tx, &pending, &mut posts, 1);
+        forward(&tx, &pending, &mut posts, 2);
+        assert_eq!(posts, 1, "one wake-up for a burst");
+        // A drain whose budget runs out after one message: the rest waits for
+        // `tick`, and what comes meanwhile posts nothing (R2-D-01).
+        assert_eq!(take_service(&rx, &pending), Some(1));
+        forward(&tx, &pending, &mut posts, 3);
+        assert_eq!(posts, 1, "no wake-up ahead of input while leftovers wait");
+        // `tick` drains the rest; the queue seen empty clears the flag.
+        assert_eq!(take_service(&rx, &pending), Some(2));
+        assert_eq!(take_service(&rx, &pending), Some(3));
+        assert_eq!(take_service(&rx, &pending), None);
+        assert!(!pending.load(Ordering::Acquire));
+        // The next message posts again.
+        forward(&tx, &pending, &mut posts, 4);
+        assert_eq!(posts, 2);
+    }
+
+    #[test]
+    fn a_message_racing_a_drain_is_never_left_without_a_wake_up() {
+        for _ in 0..50 {
+            let (tx, rx) = unbounded::<u32>();
+            let pending = Arc::new(AtomicBool::new(false));
+            let posts = Arc::new(AtomicU64::new(0));
+            let sender = {
+                let (pending, posts) = (pending.clone(), posts.clone());
+                std::thread::spawn(move || {
+                    for i in 0..2_000 {
+                        tx.send(i).unwrap();
+                        if wake_due(&pending) {
+                            posts.fetch_add(1, Ordering::Release);
+                        }
+                    }
+                })
+            };
+            // A drain runs for each posted wake-up, as `drain_service` does.
+            let mut seen = 0;
+            let drain = |seen: &mut u64| {
+                let now = posts.load(Ordering::Acquire);
+                if now > *seen {
+                    *seen = now;
+                    pending.store(true, Ordering::Release);
+                    while take_service(&rx, &pending).is_some() {}
+                }
+            };
+            while !sender.is_finished() {
+                drain(&mut seen);
+            }
+            sender.join().unwrap();
+            drain(&mut seen);
+            assert!(rx.is_empty(), "a message was left with no wake-up posted for it");
         }
     }
 }

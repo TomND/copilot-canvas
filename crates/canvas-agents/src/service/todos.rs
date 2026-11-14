@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use canvas_host::server::Client;
@@ -76,6 +76,81 @@ pub(super) struct Hub {
     generation: u64,
     /// The unreadable book file's size and time when it was read.
     unreadable_stamp: Option<(u64, Option<std::time::SystemTime>)>,
+    /// What applied changes left to write: written once the hub's lock is
+    /// released ([`flush`], [`Writes::write`]), so a slow disk never holds
+    /// up the bus snapshot, a connecting client or a launch (R2-C-02).
+    pending: Writes,
+}
+
+/// Files an applied change leaves to write, in order: the book's text (the
+/// newest only), the Markdown mirror (the newest only) and log lines.
+#[derive(Default)]
+pub(super) struct Writes {
+    book: Option<(PathBuf, String)>,
+    mirror: Option<(PathBuf, String, u64)>,
+    log: Vec<(PathBuf, String)>,
+}
+
+impl Writes {
+    fn is_empty(&self) -> bool {
+        self.book.is_none() && self.mirror.is_none() && self.log.is_empty()
+    }
+
+    /// Writes them; answers what could not be written (a book that could
+    /// not be written is handed back to be written with the next change).
+    fn write(self) -> (Vec<String>, Option<(PathBuf, String)>) {
+        let mut errors = Vec::new();
+        let mut unwritten = None;
+        if let Some((path, text)) = self.book
+            && let Err(error) = write_durable(&path, text.as_bytes())
+        {
+            errors.push(format!("cannot save {}: {error}", path.display()));
+            unwritten = Some((path, text));
+        }
+        if let Some((path, text, now)) = self.mirror
+            && let Err(error) = write_mirror(&path, &text, now)
+        {
+            errors.push(error);
+        }
+        for (path, line) in self.log {
+            write_log_line(&path, &line);
+        }
+        (errors, unwritten)
+    }
+}
+
+impl Hub {
+    /// What is left to write (the lock is released before it is written).
+    fn take_writes(&mut self) -> Writes {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Writes now what is left to write (tests and tools that hold the hub alone).
+    #[cfg(test)]
+    fn write_now(&mut self) -> Vec<String> {
+        let (errors, unwritten) = self.take_writes().write();
+        if let Some(book) = unwritten {
+            self.pending.book.get_or_insert(book);
+        }
+        errors
+    }
+}
+
+/// Writes what the service's book left to write, one writer at a time, in
+/// the order the changes were made; the book's lock is held only to take
+/// them. Answers what could not be written.
+pub(super) fn flush(shared: &Shared) -> Vec<String> {
+    let _writer = lock(&shared.todos_writer);
+    let writes = lock(&shared.todos).take_writes();
+    if writes.is_empty() {
+        return Vec::new();
+    }
+    let (errors, unwritten) = writes.write();
+    if let Some(book) = unwritten {
+        // Tried again with the next change or pass (a newer text replaces it).
+        lock(&shared.todos).pending.book.get_or_insert(book);
+    }
+    errors
 }
 
 impl Hub {
@@ -112,14 +187,15 @@ impl Hub {
         self.store(home, text)
     }
 
-    /// Writes the book's text when it changed: atomically and flushed to the
-    /// disk before it replaces the old file (never over a book it could not read).
+    /// Keeps the book's text to write when it changed (never over a book it
+    /// could not read): atomically and flushed to the disk before it
+    /// replaces the old file, once the lock is released ([`flush`]).
     fn store(&mut self, home: &Path, text: String) -> Result<(), String> {
         if !crate::doc::valid_canvas_id(&self.canvas) || self.unreadable.is_some() || self.newer.is_some() || text == self.saved {
             return Ok(());
         }
         let path = crate::todos_cli::book_path(home, &self.canvas);
-        write_durable(&path, text.as_bytes()).map_err(|e| format!("cannot save {}: {e}", path.display()))?;
+        self.pending.book = Some((path, text.clone()));
         self.saved = text;
         Ok(())
     }
@@ -236,12 +312,9 @@ fn bus_event(book: &TodoBook, routing: &Routing, actor: &Actor, event: &todos::T
     }
 }
 
-/// One line of `log.jsonl`.
-fn append_log(home: &Path, canvas: &str, actor: &Actor, op: &TodoOp, result: &Result<Applied, String>, now: u64) {
+/// One line of `log.jsonl`, kept to write once the lock is released.
+fn append_log(hub: &mut Hub, home: &Path, canvas: &str, actor: &Actor, op: &TodoOp, result: &Result<Applied, String>, now: u64) {
     let path = crate::todos_cli::todos_dir(home, canvas).join("log.jsonl");
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG) {
-        let _ = std::fs::rename(&path, path.with_extension("jsonl.old"));
-    }
     let mut op = serde_json::to_value(op).unwrap_or_default();
     // An import's text is in the file it came from.
     if let Some(text) = op.get("text").and_then(|t| t.as_str()).filter(|t| t.len() > 2_000) {
@@ -251,8 +324,18 @@ fn append_log(home: &Path, canvas: &str, actor: &Actor, op: &TodoOp, result: &Re
         Ok(applied) => json!({ "ms": now, "actor": actor, "op": op, "ok": true, "message": applied.message, "warnings": applied.warnings }),
         Err(why) => json!({ "ms": now, "actor": actor, "op": op, "ok": false, "message": why }),
     };
-    let _ = std::fs::create_dir_all(path.parent().unwrap_or(home));
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    hub.pending.log.push((path, line.to_string()));
+}
+
+/// Appends a line to a `log.jsonl` (renamed to `log.jsonl.old` beyond [`MAX_LOG`]).
+fn write_log_line(path: &Path, line: &str) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > MAX_LOG) {
+        let _ = std::fs::rename(path, path.with_extension("jsonl.old"));
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{line}");
     }
 }
@@ -269,9 +352,7 @@ fn is_mirror(text: &str) -> bool {
 /// there that is not a mirror (the owner's own TODOs.md) is copied to
 /// `<file>.bak` (`<file>.<ms>.bak` when that exists) before it is first
 /// replaced; without that copy it is left alone.
-fn write_mirror(book: &TodoBook, now: u64) -> Result<(), String> {
-    let Some(path) = book.settings.mirror.as_deref().map(Path::new) else { return Ok(()) };
-    let text = todos::mirror_markdown(book);
+fn write_mirror(path: &Path, text: &str, now: u64) -> Result<(), String> {
     match std::fs::read(path) {
         Ok(old) if old == text.as_bytes() => return Ok(()),
         Ok(old) if !is_mirror(&String::from_utf8_lossy(&old)) => {
@@ -319,7 +400,7 @@ pub(super) fn apply(hub: &mut Hub, home: &Path, routing: &Routing, op: TodoOp, a
     };
     if let Some(why) = refused {
         let result = Err(why);
-        append_log(home, &routing.canvas, actor, &op, &result, now);
+        append_log(hub, home, &routing.canvas, actor, &op, &result, now);
         return Outcome { result, events: Vec::new() };
     }
     // A canvas-wide agent's group is its frame: it has none for boards (it names them).
@@ -346,12 +427,13 @@ pub(super) fn apply(hub: &mut Hub, home: &Path, routing: &Routing, op: TodoOp, a
         if let Err(error) = stored {
             applied.warnings.push(format!("the change is not saved yet: {error}"));
         }
-        if let Err(error) = write_mirror(&hub.book, now) {
-            applied.warnings.push(error);
+        // The mirror's text now; the file is looked at and written once the lock is released.
+        if let Some(path) = hub.book.settings.mirror.clone() {
+            hub.pending.mirror = Some((PathBuf::from(path), todos::mirror_markdown(&hub.book), now));
         }
         events = applied.events.iter().map(|e| bus_event(&hub.book, routing, actor, e, hop)).collect();
     }
-    append_log(home, &routing.canvas, actor, &logged, &result, now);
+    append_log(hub, home, &routing.canvas, actor, &logged, &result, now);
     Outcome { result, events }
 }
 
@@ -378,11 +460,21 @@ fn answer_of(book: &TodoBook, result: &Result<Applied, String>) -> Answer {
     }
 }
 
-/// Serves one `canvas.todo` request: applies it as its sender and writes
-/// the answer the command waits for. Returns the answer and the events to
-/// route. A request served before (its inbox file read again because it
-/// could not be removed) is never applied twice.
+/// Serves one `canvas.todo` request and writes everything (the book, the
+/// answer the command waits for) at once: for tests, which hold the hub alone.
+#[cfg(test)]
 pub(super) fn serve(hub: &mut Hub, home: &Path, routing: &Routing, event: &Event, live: Option<BTreeSet<String>>, now: u64) -> (Answer, Vec<Event>) {
+    let (answer, events) = serve_held(hub, home, routing, event, live, now);
+    hub.write_now();
+    write_answer(home, event.data["request"].as_str().unwrap_or_default(), &answer);
+    (answer, events)
+}
+
+/// Serves one `canvas.todo` request: applies it as its sender. Returns the
+/// answer the command waits for (written by the caller once the book's lock
+/// is released) and the events to route. A request served before (its inbox
+/// file read again because it could not be removed) is never applied twice.
+pub(super) fn serve_held(hub: &mut Hub, home: &Path, routing: &Routing, event: &Event, live: Option<BTreeSet<String>>, now: u64) -> (Answer, Vec<Event>) {
     let source = event.source.as_str();
     let request = event.data["request"].as_str().unwrap_or_default();
     if hub.seen(request) {
@@ -401,7 +493,6 @@ pub(super) fn serve(hub: &mut Hub, home: &Path, routing: &Routing, event: &Event
             Err(error) => (Answer { ok: false, message: format!("not a todo operation this service knows ({error}): is atelier newer than the service?"), state: "refused".into(), data: None }, Vec::new()),
         }
     };
-    write_answer(home, request, &answer);
     (answer, events)
 }
 
@@ -417,7 +508,20 @@ pub(super) fn is_request(event: &Event) -> bool {
 /// A `atelier todo …` request from the bus inbox. Returns events to route.
 pub(super) fn request(shared: &Shared, routing: &Routing, event: &Event, now: u64) -> Vec<Event> {
     let live = live_sessions(shared, routing);
-    let (answer, events) = serve(&mut lock(&shared.todos), &shared.instance.home, routing, event, Some(live), now);
+    let (mut answer, events) = serve_held(&mut lock(&shared.todos), &shared.instance.home, routing, event, Some(live), now);
+    // Written after the lock is released: the book, then the answer the command waits for.
+    let errors = flush(shared);
+    if answer.ok && !errors.is_empty() {
+        for error in &errors {
+            answer.message.push_str(&format!("\nWarning: the change is not saved yet: {error}."));
+        }
+        if let Some(data) = answer.data.as_mut()
+            && let Some(warnings) = data["warnings"].as_array_mut()
+        {
+            warnings.extend(errors.iter().map(|e| serde_json::Value::from(format!("the change is not saved yet: {e}"))));
+        }
+    }
+    write_answer(&shared.instance.home, event.data["request"].as_str().unwrap_or_default(), &answer);
     let op = event.data["op"].as_str().unwrap_or_default();
     let who = super::prs::who(routing, &event.source);
     log(&shared.instance, &format!("todo {op} from {who}: {}{}", if answer.ok { "" } else { "refused: " }, answer.message.lines().next().unwrap_or_default()));
@@ -445,6 +549,10 @@ pub(super) fn action(shared: &Shared, client: &Arc<Client>, value: &serde_json::
     let routing = lock(&shared.routing).clone();
     let live = live_sessions(shared, &routing);
     let (refused, events) = window_op(&mut lock(&shared.todos), &shared.instance.home, &routing, value, Some(live), now_ms());
+    // Written after the lock is released (R2-C-02).
+    for error in flush(shared) {
+        log(&shared.instance, &format!("todos: {error}"));
+    }
     // Made and sent in turn with the bus loop's: a snapshot made before a newer one is never sent after it.
     match refused {
         Some(notice) => {
@@ -493,6 +601,9 @@ pub(super) fn merged(shared: &Shared, routing: &Routing, event: &Event, now: u64
         return Vec::new();
     }
     let events = finish_merged(&mut lock(&shared.todos), &shared.instance.home, routing, event, now);
+    for error in flush(shared) {
+        log(&shared.instance, &format!("todos: {error}"));
+    }
     for done in &events {
         log(&shared.instance, &format!("todo {} is done: its pull request was merged", done.data["id"].as_str().unwrap_or_default()));
     }
@@ -704,16 +815,17 @@ mod tests {
             TodoOp::Add(Box::new(todos::NewTodo { board: "Decomps".into(), title: "Not started".into(), status: Some(todos::Status::Todo), ..Default::default() })),
             TodoOp::Link { id: "DEC-002".into(), kind: todos::LinkKind::Pr, target: "https://github.com/o/r/pull/4".into(), title: None },
         ] {
-            assert!(apply(&mut hub, &home, &r, op, &you, run()).result.is_ok());
+            assert!(applied(&mut hub, &home, &r, op, &you, run()).result.is_ok());
         }
         let s1 = Actor::agent("s1", "Fix flaky test");
-        apply(&mut hub, &home, &r, TodoOp::Claim { id: "DEC-001".into(), force: false, session: None }, &s1, run());
-        apply(&mut hub, &home, &r, TodoOp::Submit { id: "DEC-001".into(), pr: Some("https://github.com/O/R/pull/4".into()), summary: None }, &s1, run());
+        applied(&mut hub, &home, &r, TodoOp::Claim { id: "DEC-001".into(), force: false, session: None }, &s1, run());
+        applied(&mut hub, &home, &r, TodoOp::Submit { id: "DEC-001".into(), pr: Some("https://github.com/O/R/pull/4".into()), summary: None }, &s1, run());
         assert!(std::fs::read_to_string(&mirror).unwrap().contains("- [ ] **DEC-001: [[DEC-001 - Load the file]]** - (canvas: in review; claimed by Fix flaky test)"));
         let closed = Event { kind: "pr.closed".into(), data: json!({ "url": "https://github.com/o/r/pull/4" }), ..Default::default() };
         assert!(finish_merged(&mut hub, &home, &r, &closed, NOW).is_empty());
         let merged = Event { kind: "pr.merged".into(), source: "s1".into(), data: json!({ "pr": "github.com/o/r#4", "url": "https://github.com/o/r/pull/4", "monitor": "atelier" }), hop: 1, ..Default::default() };
         let events = finish_merged(&mut hub, &home, &r, &merged, NOW);
+        hub.write_now();
         assert_eq!(events.len(), 1, "only the todo in review; one in todo stays");
         assert_eq!((events[0].kind.as_str(), events[0].data["id"].as_str(), events[0].data["by"].as_str(), events[0].group.as_str()), ("todo.done", Some("DEC-001"), Some("pull request merged"), "g1"));
         let done = hub.book.todo("DEC-001").unwrap();
@@ -782,8 +894,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// [`apply`], then what it left to write is written (the service does
+    /// that once the book's lock is released: [`flush`]).
+    fn applied(hub: &mut Hub, home: &Path, routing: &Routing, op: TodoOp, actor: &Actor, run: Run) -> Outcome {
+        let outcome = apply(hub, home, routing, op, actor, run);
+        hub.write_now();
+        outcome
+    }
+
     fn add_board(hub: &mut Hub, home: &Path, name: &str) -> Outcome {
-        apply(hub, home, &routing(), TodoOp::AddBoard { name: name.into(), prefix: None, parent: None, groups: vec![], x: None, y: None }, &Actor::human(), Run { now: NOW, hop: 0, live: None })
+        applied(hub, home, &routing(), TodoOp::AddBoard { name: name.into(), prefix: None, parent: None, groups: vec![], x: None, y: None }, &Actor::human(), Run { now: NOW, hop: 0, live: None })
     }
 
     #[test]
@@ -868,6 +988,25 @@ mod tests {
     }
 
     #[test]
+    fn changes_are_written_once_the_lock_is_released_newest_book_and_every_line_in_order() {
+        let (home, r, mut hub) = (temp_home(), routing(), Hub::default());
+        let run = || Run { now: NOW, hop: 0, live: None };
+        let board = |name: &str| TodoOp::AddBoard { name: name.into(), prefix: None, parent: None, groups: vec![], x: None, y: None };
+        assert!(apply(&mut hub, &home, &r, board("Decomps"), &Actor::human(), run()).result.is_ok());
+        let path = crate::todos_cli::book_path(&home, "c1");
+        assert!(!path.exists() && log_lines(&home).is_empty(), "nothing is written while the book's lock is held (R2-C-02)");
+        assert!(apply(&mut hub, &home, &r, board("Second"), &Actor::human(), run()).result.is_ok());
+        let writes = hub.take_writes();
+        assert!(hub.take_writes().is_empty(), "taken once");
+        let (errors, unwritten) = writes.write();
+        assert!(errors.is_empty() && unwritten.is_none(), "{errors:?}");
+        assert_eq!(crate::todos_cli::load(&home, "c1").boards.len(), 2, "the newest book");
+        let lines: Vec<String> = log_lines(&home).iter().map(|l| l["message"].as_str().unwrap_or_default().to_owned()).collect();
+        assert!(lines.len() == 2 && lines[0].contains("Decomps") && lines[1].contains("Second"), "{lines:?}");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
     fn the_book_stays_within_its_size_budget() {
         let (home, r, mut hub) = (temp_home(), routing(), Hub::default());
         add_board(&mut hub, &home, "Decomps");
@@ -876,16 +1015,16 @@ mod tests {
         let you = Actor::human();
         let run = || Run { now: NOW, hop: 0, live: None };
         let add = |title: &str| TodoOp::Add(Box::new(todos::NewTodo { board: "Decomps".into(), title: title.into(), ..Default::default() }));
-        assert!(apply(&mut hub, &home, &r, add("Fits"), &you, run()).result.is_ok());
+        assert!(applied(&mut hub, &home, &r, add("Fits"), &you, run()).result.is_ok());
         let book = hub.book.clone();
-        let refused = apply(&mut hub, &home, &r, TodoOp::Update(Box::new(todos::TodoUpdate { id: "DEC-1".into(), body: Some("x".repeat(2_000)), ..Default::default() })), &you, run()).result.unwrap_err();
+        let refused = applied(&mut hub, &home, &r, TodoOp::Update(Box::new(todos::TodoUpdate { id: "DEC-1".into(), body: Some("x".repeat(2_000)), ..Default::default() })), &you, run()).result.unwrap_err();
         assert!(refused.contains("would grow beyond"), "{refused}");
         assert_eq!(hub.book, book, "refused: nothing changed");
         assert_eq!(crate::todos_cli::load(&home, "c1"), book, "nor stored");
         // Over the budget (a smaller one now), changes that do not grow it still go through.
         hub.budget = Some(10);
-        assert!(apply(&mut hub, &home, &r, add("More"), &you, run()).result.is_err());
-        assert!(apply(&mut hub, &home, &r, TodoOp::Delete { id: "DEC-1".into() }, &you, run()).result.is_ok());
+        assert!(applied(&mut hub, &home, &r, add("More"), &you, run()).result.is_err());
+        assert!(applied(&mut hub, &home, &r, TodoOp::Delete { id: "DEC-1".into() }, &you, run()).result.is_ok());
         assert!(hub.book.todos.is_empty() && crate::todos_cli::load(&home, "c1").todos.is_empty());
         let _ = std::fs::remove_dir_all(home);
     }
@@ -898,7 +1037,7 @@ mod tests {
         std::fs::write(&mirror, "# My own list\n- [ ] keep me\n").unwrap();
         let run = || Run { now: NOW, hop: 0, live: None };
         add_board(&mut hub, &home, "Decomps");
-        assert!(apply(&mut hub, &home, &r, TodoOp::SetMirror { path: Some(mirror.display().to_string()) }, &Actor::human(), run()).result.is_ok());
+        assert!(applied(&mut hub, &home, &r, TodoOp::SetMirror { path: Some(mirror.display().to_string()) }, &Actor::human(), run()).result.is_ok());
         let backup = home.join("repo").join("TODOs.md.bak");
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), "# My own list\n- [ ] keep me\n", "the owner's file is kept");
         assert!(std::fs::read_to_string(&mirror).unwrap().contains(MIRROR_MARK));

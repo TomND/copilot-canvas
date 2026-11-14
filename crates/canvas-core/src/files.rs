@@ -70,7 +70,8 @@ impl App {
         let bulk = self.upload_target();
         self.in_background(
             move |backend| {
-                crate::conn::with_bulk(backend, bulk, |backend| {
+                let size = paths.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+                let sent = over_upload_connection(backend, bulk, size, |backend| {
                     let mut uploaded = Vec::new();
                     let mut errors = Vec::new();
                     for path in &paths {
@@ -79,8 +80,9 @@ impl App {
                             Err(error) => errors.push(format!("{}: {error:#}", Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
                         }
                     }
-                    (uploaded, errors)
-                })
+                    Ok((uploaded, errors))
+                });
+                sent.unwrap_or_else(|error| (Vec::new(), vec![format!("{error:#}")]))
             },
             move |(paths, errors)| AppEvent::Uploaded { term, paths, errors },
         );
@@ -95,6 +97,32 @@ impl App {
             true => self.notify(format!("Uploaded {} file(s); their remote paths were pasted.", paths.len()), false),
             false => self.notify(format!("Not uploaded: {}", errors.join("; ")), true),
         }
+    }
+}
+
+/// The most sent over the window's own connection when an upload connection
+/// cannot be opened: more would hold typing and its echo behind it for
+/// seconds on a tunnel (R2-D-06).
+pub const FALLBACK_MAX: u64 = 1 << 20;
+
+/// Runs `work` on a connection of its own for uploads (`bulk`, remote
+/// mode; the window's own `main` otherwise). When that cannot be opened, a
+/// transfer of `size` bytes up to [`FALLBACK_MAX`] goes over `main`; a larger
+/// one fails, saying why.
+pub fn over_upload_connection<T>(
+    main: &dyn Backend,
+    bulk: Option<(crate::conn::ConnTarget, crate::conn::ConnOptions)>,
+    size: u64,
+    work: impl FnOnce(&dyn Backend) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let Some((target, options)) = bulk else { return work(main) };
+    match crate::conn::open_bulk(&target, &options) {
+        Ok(bulk) => work(&*bulk.backend),
+        Err(_) if size <= FALLBACK_MAX => work(main),
+        Err(error) => Err(error.context(format!(
+            "no connection of its own could be opened for {} KB (not sent over the window's, which typing uses); try again",
+            size.div_ceil(1024)
+        ))),
     }
 }
 
@@ -184,5 +212,18 @@ mod tests {
         assert_eq!(calls.iter().map(|(o, _, l)| (*o, *l)).collect::<Vec<_>>(), [(0, false), (PIECE as u64, true)]);
         std::fs::remove_file(&path).unwrap();
         assert!(upload_file(&recorder, &std::env::temp_dir()).is_err(), "folders are not uploaded");
+    }
+    #[test]
+    fn a_large_upload_never_falls_back_to_the_windows_connection() {
+        // Nothing listens there: the upload connection cannot be opened.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+        let bulk = || Some((crate::conn::ConnTarget::Tcp { addr: closed.clone(), remote_id: None, secret: vec![1] }, crate::conn::ConnOptions::default()));
+        let main = crate::rpc::Offline;
+        let used = |size: u64| over_upload_connection(&main, bulk(), size, |_| Ok(())).map_err(|e| format!("{e:#}"));
+        assert_eq!(used(FALLBACK_MAX), Ok(()), "a small one goes over the window's connection");
+        let error = used(FALLBACK_MAX + 1).unwrap_err();
+        assert!(error.contains("not sent over the window's"), "{error}");
+        // Local mode: the window's own backend.
+        assert!(over_upload_connection(&main, None, 1 << 30, |_| Ok(())).is_ok());
     }
 }

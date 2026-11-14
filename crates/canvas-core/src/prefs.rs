@@ -5,8 +5,20 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
-use crate::sync::ClientPrefs;
+use crate::sync::{ClientPrefs, Op};
+
+/// Canvas changes a client could not send before it closed (offline, or
+/// waiting for the canvas again): kept next to its preferences and sent at
+/// its next start, so quitting while "Offline — reconnecting…" loses nothing.
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
+pub struct Unsent {
+    /// The document they belong to.
+    pub key: String,
+    pub saved_ms: u64,
+    pub ops: Vec<Op>,
+}
 
 pub struct PrefsFile {
     path: PathBuf,
@@ -29,6 +41,51 @@ impl PrefsFile {
         let prefs: ClientPrefs = serde_json::from_slice(&std::fs::read(&self.path).ok()?).ok()?;
         self.saved = Some(prefs.clone());
         Some(prefs)
+    }
+
+    /// The backend's facts as the last run got them (`App::new` starts with
+    /// them and asks the backend again in the background).
+    pub fn load_info(&self) -> Option<crate::rpc::BackendInfo> {
+        serde_json::from_slice(&std::fs::read(self.path.with_extension("backend.json")).ok()?).ok()
+    }
+
+    /// Keeps the backend's facts for the next start (atomically).
+    pub fn save_info(&self, info: &crate::rpc::BackendInfo) -> Result<()> {
+        let path = self.path.with_extension("backend.json");
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        std::fs::write(&temp, serde_json::to_vec(info)?)?;
+        std::fs::rename(&temp, &path)?;
+        Ok(())
+    }
+
+    /// Where this client's unsent canvas changes are kept.
+    fn unsent_path(&self) -> PathBuf {
+        self.path.with_extension("unsent.json")
+    }
+
+    /// Keeps canvas changes that could not be sent (atomically).
+    pub fn save_unsent(&self, unsent: &Unsent) -> Result<()> {
+        let path = self.unsent_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        std::fs::write(&temp, serde_json::to_vec(unsent)?)?;
+        std::fs::rename(&temp, &path)?;
+        Ok(())
+    }
+
+    /// The canvas changes kept by the last run, if any.
+    pub fn load_unsent(&self) -> Option<Unsent> {
+        serde_json::from_slice(&std::fs::read(self.unsent_path()).ok()?).ok()
+    }
+
+    /// They were sent: forgotten.
+    pub fn clear_unsent(&self) {
+        let _ = std::fs::remove_file(self.unsent_path());
     }
 
     /// Writes the preferences when they changed (atomically).

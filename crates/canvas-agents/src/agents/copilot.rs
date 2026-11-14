@@ -1,6 +1,6 @@
 //! GitHub Copilot CLI.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::Result;
@@ -18,9 +18,26 @@ pub fn set_sessions_dir(path: PathBuf) {
     let _ = SESSIONS_DIR.set(path);
 }
 
-/// Copilot's session history: `--sessions-dir`, else `~/.copilot/session-state`.
+/// Copilot's session history: `--sessions-dir`, else `<COPILOT_HOME>/session-state`
+/// (`~/.copilot` when `COPILOT_HOME` is not set).
 pub fn sessions_dir() -> PathBuf {
-    SESSIONS_DIR.get().cloned().unwrap_or_else(|| super::home().join(".copilot").join("session-state"))
+    SESSIONS_DIR.get().cloned().unwrap_or_else(|| crate::copilot_cfg::copilot_home().join("session-state"))
+}
+
+/// The history root to use instead of `given` when `COPILOT_HOME` moves
+/// Copilot's state: `given` is the default every client passes
+/// (`~/.copilot/session-state`, `Instance::new`'s, which does not read
+/// `COPILOT_HOME`), and `COPILOT_HOME` names another folder. An explicit
+/// other folder (`--sessions-dir`, tests' sandboxes) stays (S5-10).
+pub fn sessions_dir_for(given: &Path) -> Option<PathBuf> {
+    let home = std::env::var_os("COPILOT_HOME").filter(|h| !h.is_empty()).map(PathBuf::from)?;
+    let default = super::home().join(".copilot").join("session-state");
+    moved_sessions_dir(given, &default, &home)
+}
+
+fn moved_sessions_dir(given: &Path, default: &Path, copilot_home: &Path) -> Option<PathBuf> {
+    let moved = copilot_home.join("session-state");
+    (canvas_model::skills::same_path(given, default) && !canvas_model::skills::same_path(&moved, default)).then_some(moved)
 }
 
 impl Provider for Copilot {
@@ -164,6 +181,17 @@ pub fn args(id: &str, launch: &AgentLaunch, integration: &Integration) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copilot_home_moves_the_default_history_root_only() {
+        let (default, home) = (PathBuf::from("/u/.copilot/session-state"), PathBuf::from("/data/copilot"));
+        // The default clients pass: the history is where COPILOT_HOME keeps it (S5-10).
+        assert_eq!(moved_sessions_dir(&default, &default, &home), Some(home.join("session-state")));
+        // An explicit other folder (`--sessions-dir`, a sandbox) stays.
+        assert_eq!(moved_sessions_dir(Path::new("/sandbox/sessions"), &default, &home), None);
+        // COPILOT_HOME naming the default folder changes nothing.
+        assert_eq!(moved_sessions_dir(&default, &default, Path::new("/u/.copilot")), None);
+    }
 
     #[test]
     fn new_resume_and_headless_command_lines_match_copilot_flags() {

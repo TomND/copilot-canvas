@@ -119,7 +119,13 @@ pub(super) fn rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         "40b",
         "New: a canvas agent runs on an event from any group (stand-in agent, its skill delivered); paused or for another canvas: no run; Stop, Disable",
         "canvas_agent_runs_across_groups",
-        || runs(sb, gui),
+        || {
+            let result = runs(sb, gui);
+            // Whatever happened: the agent off for the rows after this one (a
+            // pull request row has its own coordinator, which this one would race).
+            let _ = tidy_coordinator(sb, gui);
+            result
+        },
     );
     check(
         rows,
@@ -352,6 +358,29 @@ fn talk(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
 }
 
 /// Leaves the helper stopped and disabled, the canvas focused.
+/// Row 40's agent disabled (and its run stopped) when row 40b left it on.
+fn tidy_coordinator(sb: &Sandbox, gui: &mut Gui) -> Result<()> {
+    let doc = sb.doc()?;
+    let Some(node) = doc.nodes.iter().find(|n| n.name == NAME && n.is_canvas_agent()).cloned() else { return Ok(()) };
+    if node.passive.as_ref().is_none_or(|p| p.disabled) {
+        return Ok(());
+    }
+    gui.canvas_focus()?;
+    gui.key("Esc", &[])?;
+    click_text(gui, " Agents ")?;
+    let row = format!("◎ {NAME}  ");
+    gui.wait("its row in the agents panel", 5, |t| t.contains(&row))?;
+    click_text(gui, &row)?;
+    gui.wait("its details", 5, |t| t.contains(&format!("◎ {NAME}")) && t.contains("SETTINGS"))?;
+    if gui.screen().contains("Stop run") {
+        click_text(gui, " Stop run ")?;
+        gui.wait("its run stopped", 15, |t| !t.contains("Stop run"))?;
+    }
+    click_text(gui, &format!("{}yes", setting("Enabled")))?;
+    wait_doc(&sb.canvas, "the agent disabled", |d| d.node(&node.id).and_then(|n| n.passive.as_ref()).is_some_and(|p| p.disabled))?;
+    gui.canvas_focus()
+}
+
 fn tidy_helper(sb: &Sandbox, gui: &mut Gui) -> Result<()> {
     gui.canvas_focus()?;
     let doc = sb.doc()?;

@@ -1912,13 +1912,15 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         std::fs::create_dir_all(&projects)?;
         std::fs::write(projects.join(format!("{a}.jsonl")), json!({ "type": "user", "sessionId": a, "message": { "role": "user", "content": "parity" } }).to_string() + "\n")?;
         gui.open("Model check A", &format!("Model: {initial}"))?;
-        anyhow::ensure!(log().contains(&format!("terminal {a}: claude resume, model {initial}")), "the resume keeps --model {initial}:\n{}", log().lines().filter(|l| l.contains(&a)).collect::<Vec<_>>().join("\n"));
+        // The tile shows at once (the last run's screen); the service logs the
+        // resume a moment later, which a slow machine makes visible.
+        wait_log(gui, &log, &format!("terminal {a}: claude resume, model {initial}"), &a, &format!("the resume keeps --model {initial}"))?;
         // Copilot keeps a session's model itself: its resume carries none ("MCP parity" started in row 8).
         let mcp = sb.doc()?.nodes.iter().find(|n| n.name == "MCP parity").map(|n| n.id.clone());
         if let Some(id) = mcp.filter(|id| log().matches(&format!("launched {id} ")).count() > log().matches(&format!("terminal {id} exited with ")).count()) {
             stop_box(gui, &log, "MCP parity", &id)?;
             gui.open("MCP parity", "Model: none")?;
-            anyhow::ensure!(log().lines().any(|l| l.ends_with(&format!("terminal {id}: copilot resume"))), "a Copilot resume carries no model");
+            wait_log(gui, &log, &format!("terminal {id}: copilot resume\n"), &id, "a Copilot resume carries no model")?;
         }
         // A group's override wins in the group ("from group …"); a choice there is for that session only.
         group_menu(gui, "Session defaults for group…")?;
@@ -2026,6 +2028,23 @@ fn create_from_dialog(gui: &mut Gui, sb: &Sandbox, name: &str) -> Result<String>
 }
 
 /// Stops a running box (X, confirmed) and waits for its terminal to exit.
+/// Waits (10 s at most) for `line` in the service log after an explicit
+/// start: the GUI shows the box's terminal at once, the service launches it
+/// a moment later. On a timeout: the box's log lines and what the window
+/// shows of it (whether it took the terminal for one still running).
+fn wait_log(gui: &Gui, log: &dyn Fn() -> String, line: &str, id: &str, what: &str) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !log().contains(line) {
+        if Instant::now() > deadline {
+            let tree = gui.tree().unwrap_or_default();
+            let lines: Vec<String> = log().lines().filter(|l| l.contains(id)).map(str::to_owned).collect();
+            bail!("{what}:\n{}\n--- the window: focus {}, focused terminal {}, tiles {}", lines.join("\n"), tree["focus"], tree["focused_term"], tree["tiles"]);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
 fn stop_box(gui: &mut Gui, log: &dyn Fn() -> String, name: &str, id: &str) -> Result<()> {
     let exited = format!("terminal {id} exited with ");
     let before = log().matches(&exited).count();
@@ -2041,6 +2060,13 @@ fn stop_box(gui: &mut Gui, log: &dyn Fn() -> String, name: &str, id: &str) -> Re
     while log().matches(&exited).count() == before {
         anyhow::ensure!(Instant::now() < deadline, "{name} did not stop");
         std::thread::sleep(Duration::from_millis(200));
+    }
+    // The window learns of the exit a moment after the log has it: a person
+    // starts the box again once it shows stopped (a double-click before that
+    // only shows the terminal it still takes for running).
+    while gui.tree()?["tiles"].as_array().is_some_and(|t| t.iter().any(|t| t["id"] == id && t["alive"] == true)) {
+        anyhow::ensure!(Instant::now() < deadline, "{name} stopped, but the window still shows it running");
+        std::thread::sleep(Duration::from_millis(100));
     }
     Ok(())
 }

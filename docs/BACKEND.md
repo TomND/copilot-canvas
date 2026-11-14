@@ -51,7 +51,7 @@ the connection dropped while waiting).
 
 | Request | Answer | Used by |
 |---|---|---|
-| `Info` | `Info(BackendInfo)`: data folder, user profile folder, Copilot history folder, `data.db` path, the machine's default agent, installed agents | App start (agent for new sessions, installed agents, suggested group folders, folder browser start) |
+| `Info` | `Info(BackendInfo)`: data folder, user profile folder, Copilot history folder, `data.db` path, the machine's default agent, installed agents | App start (agent for new sessions, installed agents, suggested group folders, folder browser start): asked at once only the first time; later starts use the copy the last run kept (`<home>/prefs/<client>-<key>.backend.json`) and ask again in the background |
 | `ConfigSnapshot { agent }` | `Config(Snapshot)` (problems in `errors`; plugin folders filled in as `Plugin::local_folder`) | Plugins / MCP / Skills / Agents / Settings views, MCP picker, migration |
 | `ConfigSetEnabled { agent, what, name, enabled }` | `Text` (CLI output) | Space in the views |
 | `ConfigRemove { agent, what, name }` | `Text` | Del in the views |
@@ -61,7 +61,7 @@ the connection dropped while waiting).
 | `ConfigSet { key, value }`, `ConfigUnset { key }` | `Text` | Copilot settings |
 | `CliCommand { args }` | `Texts` (the `copilot` command line) | "Install plugin…" runs it in a canvas terminal (a normal host session) |
 | `RestoreMouse` | `Flag` (changed) | after replacing an old local service |
-| `Automations { dir, tasks }` | `Automations(AutoLoad)`: Copilot's `data.db` plus, when `tasks`, the manifest folder with Task Scheduler state; `dir` = the folder used | Automations view, boxes, refresh every 15 s |
+| `Automations { dir, tasks }` | `Automations(AutoLoad)`: Copilot's `data.db` plus, when `tasks`, the manifest folder with Task Scheduler state; `dir` = the folder used | Automations view, boxes, refresh every 15 s while they show, else every 2 minutes |
 | `AutomationsDir { dir }` | `Text` (folder in use for the canvas setting) | Automations / Settings views |
 | `AutomationSetEnabled { key, enabled }` | `Done` | Space on a Copilot workflow |
 | `TaskSetEnabled { name, manifest, enabled }` | `Done` (manifest first, then the task) | Space / Enable on a manifest task |
@@ -182,7 +182,8 @@ A client changes its working copy and marks it dirty; within 100 ms
 version the client had). The service applies the edits of all clients in
 arrival order, validates the result (an edit that breaks the document, such as
 a duplicate id, is refused: the sender gets `Error` and the whole document
-again), bumps the version and sends `ServiceMsg::DocPatch { key, version,
+again, at most every 5 s per client and canvas; refusals within those 5 s are
+answered once when they are over, never dropped), bumps the version and sends `ServiceMsg::DocPatch { key, version,
 origin, ops_json }` to every client that has the document open, including the
 sender, in version order (sent under the document lock).
 
@@ -196,8 +197,10 @@ The client's `Replica` keeps the service's document (`synced`, at `version`),
 that document plus its own edits in flight (`shadow`), and which fields of
 which objects are in flight. For each patch:
 
-- its own (`origin` = its connection id): applied to `synced`; the oldest edit
-  in flight is confirmed;
+- its own (`origin` = its connection id) with the targets of the oldest edit
+  in flight: applied to `synced`; that edit is confirmed (an own patch that is
+  not, an edit a refusal's resync dropped and the service applied after, is
+  taken like another window's);
 - another window's: applied to `synced`, to `shadow` except fields of its own
   edits in flight, and to the working copy except fields it changed itself
   that the service has not applied yet (in flight or not sent). Those arrive
@@ -222,8 +225,17 @@ show (`sync::stable_id`), so they end up as one box.
 After a reconnect (or a service restart) the client opens the document again.
 `Replica::resync` takes the service's document and puts the client's own
 changes that are not known to have arrived on top; they go out with the next
-edit. While offline nothing is sent; local changes wait. A `DocOpen` whose
-`Doc` has not come 10 s later is sent again.
+edit. While offline nothing is sent; local changes wait. A client that
+quits meanwhile (or while it waits for the document again) keeps them next
+to its preferences (`<home>/prefs/<client>-<key>.unsent.json`, written by
+`App::save_now`); its next start puts them on top of the document and sends
+them, then forgets the file. A `DocOpen` whose
+`Doc` has not come 10 s later is sent again (then after 20, 40 and 80 s); an
+answer that comes after the first one was taken, no newer than this copy, is
+dropped (its changes since would otherwise go again, over newer ones). A `Doc`
+the client did not ask for is the service's answer to a refused edit:
+`Replica::resync_refused` takes it and drops the changes already sent (the
+refused one is never sent again), keeping only those not sent yet (S8-05).
 
 ### What desktop clients send since round 1 (no wire additions)
 
@@ -396,13 +408,17 @@ only when something in it changed: each pass compares the snapshot without
 the book, and the book's change count (`todos::stamp`), with what every
 client got last (`passive::Sent`); a passive session's `next_run_ms` no longer
 depends on the clock (it was `now` for the whole 8 s debounce, which re-sent
-the whole snapshot every second). A connecting client, and a window whose todo
-change was refused, get one of their own. Every snapshot still carries the
+the whole snapshot every second). A connecting client gets the last snapshot
+every client got (kept with `ServiceMsg::Bus`, under the lock it is broadcast
+under: nothing is made, no store's lock is waited for, and it never comes
+after a newer one); a window whose todo change was refused gets one made
+then. Every snapshot still carries the
 whole book: an older client reads a snapshot without it as "no book".
 Windows' bus actions (`run`, `resume`, `discard_mail`, `pause`) are applied to
 the shared state at once and replayed onto the bus loop's copy before it is
 written back (`passive::BusOp`): one that arrives while a pass runs is never
-overwritten, and mail discarded meanwhile is never typed in.
+overwritten, and mail discarded meanwhile is never typed in (only the messages
+there when you discarded them go: one queued later stays).
 | `TodoOp` | `edit_check` (`{id, index, text}`: rewords a checklist item, its tick kept; anyone) and `remove_check` (`{id, index}`: people only), appended at the end, sent by the phone | a service of an older build answers "Todo change not understood by the service … restart the service after updating" with the book as it is: the phone's toast says so and its change is undone |
 | bus events | `todo.created`, `todo.proposed`, `todo.accepted`, `todo.status`, `todo.claimed`, `todo.submitted`, `todo.done` (data: `id`, `title`, `type`, `priority`, `status`, `board`, `board_name`, `by`, `by_session`, and `from`, `to`, `why`, `resolution`, `pr`, `for`, `for_session` where they apply) in the first canvas group linked to the board (else its parent's), from the actor's session (so never back to it), with the canvas id and the request's hop | ordinary events |
 | group catalog | `events.yaml` gains the seven `todo.*` entries (below) | — |
@@ -410,7 +426,9 @@ overwritten, and mail discarded meanwhile is never typed in.
 **The hub.** The service holds the routed canvas's book, read from
 `<home>/canvas-agents/<canvas id>/todos/book.json` when that canvas is
 routed (the one held before is saved first), and is its only writer: after
-every applied operation it writes the book atomically when its text changed,
+every applied operation (once the book's lock is released, one writer at a
+time, so a slow disk never holds up the bus snapshot, a connecting client or a
+launch) it writes the book atomically when its text changed,
 rewrites the Markdown mirror (`settings.mirror`: an absolute `.md` path on its
 machine; a relative one is refused) when its text changed, and appends to
 `log.jsonl` one line per applied or refused operation (`ms`, `actor`, `op`,
@@ -550,6 +568,7 @@ nothing until prompted) as idle once the terminal is quiet. Passive runs:
 |---|---|---|
 | bus snapshot (`ServiceMsg::Bus` JSON) | `restore`: `{started_ms, previous_ms, resuming, resumed, interrupted: [{id, why}]}` (absent when nothing ran before) | an older client ignores it (it shows the history's state: no "resuming after restart") |
 | `settings.json` | `restore: false` (absent: on) | an older service ignores it (it restores nothing anyway) |
+| `ClientMsg::Bus` | `{"action": "restore", "op": "cancel", "id"}`: a box waiting for its turn that you stopped is not resumed (one removed from the canvas is cancelled by its `DelNode` edit, no request needed) | an older service ignores the action |
 
 `canvas_model::status::Status::{Interrupted, Resuming}` are computed on
 clients (not a wire enum); the iPhone maps them to `StatusKind::Stopped` (label

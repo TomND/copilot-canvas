@@ -135,7 +135,9 @@ impl App {
         if !self.demo {
             items.push(item("Copy session ID", "", Action::Copy(native_id(node).to_owned()), true));
         }
-        items.push(item("Stop session", "X", Action::Stop { id: id.to_owned(), force: false }, alive));
+        // A box the service still has to resume after its restart stops too (it is not resumed).
+        let stoppable = alive || self.waits_for_restore(&session);
+        items.push(item("Stop session", "X", Action::Stop { id: id.to_owned(), force: false }, stoppable));
         items.push(item("Force stop", "", Action::Stop { id: id.to_owned(), force: true }, alive));
         items.push(self.remove_item(id, "Remove from canvas"));
         (node.name.clone(), items)
@@ -287,9 +289,10 @@ impl App {
                 let png = platform.clipboard_image_png().map_err(|e| format!("{e:#}"))?;
                 let size = png.len();
                 // A large image (up to 20 MB in one request) goes over a connection
-                // of its own: typing and its echo never wait behind it.
+                // of its own: typing and its echo never wait behind it (and not
+                // over the window's when that cannot be opened, past 1 MB).
                 let bulk = bulk.filter(|_| size > crate::files::PIECE);
-                crate::conn::with_bulk(backend, bulk, |backend| backend.set_clipboard_image(png)).map(|_| size).map_err(|e| format!("{e:#}"))
+                crate::files::over_upload_connection(backend, bulk, size as u64, |backend| backend.set_clipboard_image(png)).map(|_| size).map_err(|e| format!("{e:#}"))
             },
             move |result| {
                 AppEvent::Run(Box::new(move |app: &mut App| match result {
@@ -434,6 +437,24 @@ impl App {
             }
             _ => true,
         }
+    }
+
+    /// The service is to resume box `id` after its restart and has not
+    /// started it yet (it waits for its turn).
+    pub fn waits_for_restore(&self, id: &str) -> bool {
+        !self.owned_alive(id) && !self.launching.contains_key(id) && self.bus.restore.as_ref().is_some_and(|r| r.is_resuming(id))
+    }
+
+    /// Stop for a box waiting for its turn in the restore: the service is
+    /// asked not to resume it (an older service ignores this and resumes it).
+    pub fn cancel_restore(&mut self, id: &str) {
+        self.bus_action(serde_json::json!({ "action": "restore", "op": "cancel", "id": id }));
+        // Shown stopped at once; the service's next snapshot says so too.
+        if let Some(restore) = self.bus.restore.as_mut() {
+            restore.resuming.retain(|r| r != id);
+        }
+        let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_else(|| id.to_owned());
+        self.notify(format!("“{name}” will not be resumed."), false);
     }
 
     pub fn confirm_stop(&mut self, id: String) {
@@ -729,6 +750,8 @@ impl App {
                 if self.owned_alive(&id) {
                     self.stop_terminal(&id, force);
                     self.notify(if force { "Force stopping…" } else { "Stopping (the agent exits gracefully)…" }, false);
+                } else if self.waits_for_restore(&id) {
+                    self.cancel_restore(&id);
                 }
             }
             Action::Copy(text) => self.copy_to_clipboard(&text),
@@ -1694,5 +1717,24 @@ mod remote_tests {
         } else {
             assert!(matches!(f.app.modals.last(), Some(Modal::Viewer(_))), "no VS Code here: the viewer");
         }
+    }
+    #[test]
+    fn stopping_a_box_that_waits_to_be_resumed_asks_the_service_not_to_resume_it() {
+        let mut f = fixture(None);
+        let node: crate::doc::Node = serde_json::from_value(serde_json::json!({ "id": "r", "kind": "session", "name": "Queued", "x": 0, "y": 0 })).unwrap();
+        f.app.doc.nodes.push(node);
+        f.app.bus.restore = Some(canvas_model::bus::RestoreView { resuming: vec!["r".into()], ..Default::default() });
+        let status = |app: &App| app.node_status(app.doc.node("r").unwrap());
+        assert_eq!(status(&f.app), crate::status::Status::Resuming);
+        let (_, items) = f.app.node_menu("r");
+        assert!(items.iter().any(|i| i.label == "Stop session" && i.enabled), "Stop is offered while it waits");
+        let _ = f.sent.try_iter().count();
+        f.app.run(Action::Stop { id: "r".into(), force: false });
+        let actions: Vec<serde_json::Value> = f.sent.try_iter().filter_map(|m| if let ClientMsg::Bus { json } = m { serde_json::from_str(&json).ok() } else { None }).collect();
+        assert_eq!(actions, [serde_json::json!({ "action": "restore", "op": "cancel", "id": "r" })], "R2-C-01");
+        assert_ne!(status(&f.app), crate::status::Status::Resuming, "shown stopped at once");
+        // A running box stops as before.
+        f.app.run(Action::Stop { id: "t".into(), force: false });
+        assert!(f.sent.try_iter().any(|m| matches!(m, ClientMsg::Stop { id, .. } if id == "t")));
     }
 }

@@ -10,8 +10,9 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 
+/// Copilot's own folder: `COPILOT_HOME` (when set and not empty), else `~/.copilot`.
 pub fn copilot_home() -> PathBuf {
-    std::env::var_os("COPILOT_HOME").map(PathBuf::from).unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".copilot"))
+    std::env::var_os("COPILOT_HOME").filter(|h| !h.is_empty()).map(PathBuf::from).unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".copilot"))
 }
 
 /// Older terminal services launched Copilot with `--mouse=off`, which Copilot
