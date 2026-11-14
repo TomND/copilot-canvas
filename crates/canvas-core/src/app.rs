@@ -28,6 +28,9 @@ const DOC_FLUSH: Duration = Duration::from_millis(100);
 pub const DOC_RETRY: Duration = Duration::from_secs(10);
 /// View and panel changes are written to the client's preferences this soon.
 const PREFS_FLUSH: Duration = Duration::from_millis(400);
+/// A session whose box's terminal ended here and whose summary still says
+/// live this long after, unchanged, is taken as no longer live (R2-D-03).
+pub const LIVE_DOUBT: Duration = Duration::from_secs(5);
 
 pub enum AppEvent {
     Git { req: u64, folder: String, result: Result<Option<GitInfo>, String> },
@@ -71,6 +74,14 @@ pub struct Notice {
     pub text: String,
     pub error: bool,
     pub until: Instant,
+}
+
+/// A session's `live` in doubt ([`App::live_doubted`]): its box, since when,
+/// and the summary as it was then (the same one sent again is no news).
+pub struct LiveDoubt {
+    pub box_id: String,
+    pub since: Instant,
+    pub summary: SessionSummary,
 }
 
 pub enum Drag {
@@ -268,6 +279,11 @@ pub struct App {
     pub last_focused_sub: Option<String>,
     pub sessions: HashMap<String, SessionSummary>,
     pub sessions_loaded: bool,
+    /// Sessions whose box's terminal ended here while their summary said
+    /// live (session id → doubt). Still live and unchanged after
+    /// [`LIVE_DOUBT`], the summary is stale (an update an older host lost
+    /// would keep the box "open elsewhere" until the next reconnect).
+    pub live_doubted: HashMap<String, LiveDoubt>,
     pub terms: HashMap<String, TermInfo>,
     pub views: HashMap<String, TermView>,
     pub launching: HashMap<String, Instant>,
@@ -478,6 +494,7 @@ impl App {
             last_focused_sub: None,
             sessions: HashMap::new(),
             sessions_loaded: false,
+            live_doubted: HashMap::new(),
             terms: HashMap::new(),
             views: HashMap::new(),
             launching: HashMap::new(),
@@ -1810,9 +1827,13 @@ impl App {
             }
             ServiceMsg::Terminals(infos) => {
                 self.terms_rev += 1;
+                // Terminals that were running here and ended (or are gone from a
+                // complete list): their sessions' `live` is doubted.
+                let mut ended: Vec<String> = Vec::new();
                 // After a reconnect the first list is complete: forget the rest.
                 if std::mem::take(&mut self.resync_terms) {
                     let known: HashSet<&str> = infos.iter().map(|i| i.id.as_str()).collect();
+                    ended.extend(self.terms.values().filter(|t| t.alive && !known.contains(t.id.as_str())).map(|t| t.id.clone()));
                     self.terms.retain(|id, _| known.contains(id.as_str()));
                     self.views.retain(|id, _| known.contains(id.as_str()));
                 }
@@ -1831,11 +1852,20 @@ impl App {
                         // its size is sent again, whatever an earlier run had.
                         if !self.owned_alive(&info.id) {
                             self.forget_size(&info.id);
+                            if !self.live_doubted.is_empty() {
+                                self.live_doubted.retain(|_, d| d.box_id != info.id);
+                            }
                         }
                     } else if self.launching.remove(&info.id).is_some() && info.exit_code != Some(0) {
                         self.notify(format!("Terminal exited immediately (code {:?}).", info.exit_code), true);
                     }
+                    if !info.alive && self.owned_alive(&info.id) {
+                        ended.push(info.id.clone());
+                    }
                     self.terms.insert(info.id.clone(), info);
+                }
+                for id in ended {
+                    self.doubt_live(&id);
                 }
                 // A reattaching client restores its tiles from the saved order.
                 if self.tile_slots.is_empty() {
@@ -1867,6 +1897,16 @@ impl App {
                     self.sessions.clear();
                 }
                 for summary in upsert {
+                    // News of a doubted session: believed again (the same summary sent
+                    // again, as a reconnect's whole list does, is no news).
+                    let mut summary = summary;
+                    if let Some(doubt) = self.live_doubted.get(&summary.id) {
+                        if doubt.summary != summary {
+                            self.live_doubted.remove(&summary.id);
+                        } else if doubt.since.elapsed() >= LIVE_DOUBT {
+                            summary.live = false;
+                        }
+                    }
                     self.sessions.insert(summary.id.clone(), summary);
                 }
                 for id in remove {
@@ -2288,6 +2328,31 @@ impl App {
         self.heard.1.elapsed() >= self.conn_options.dead_after * 2 / 3
     }
 
+    /// Box `id`'s terminal ended here: if its session's summary says it is
+    /// live, that is doubted from now on ([`LIVE_DOUBT`]).
+    fn doubt_live(&mut self, id: &str) {
+        let Some(node) = self.doc.node(id).filter(|n| n.kind == NodeKind::Session) else { return };
+        let Some(summary) = self.sessions.get(native_id(node)).filter(|s| s.live) else { return };
+        let doubt = LiveDoubt { box_id: id.to_owned(), since: Instant::now(), summary: summary.clone() };
+        self.live_doubted.insert(summary.id.clone(), doubt);
+    }
+
+    /// Doubted sessions still live and unchanged after [`LIVE_DOUBT`] are
+    /// taken as not live here (shown stopped or interrupted, not open
+    /// elsewhere); news of them, or their box running again, ends the doubt.
+    fn settle_doubts(&mut self) {
+        for (id, doubt) in &self.live_doubted {
+            if doubt.since.elapsed() >= LIVE_DOUBT
+                && !self.terms.get(&doubt.box_id).is_some_and(|t| t.alive)
+                && let Some(summary) = self.sessions.get_mut(id).filter(|s| s.live)
+            {
+                summary.live = false;
+                self.sessions_rev += 1;
+                self.needs_draw = true;
+            }
+        }
+    }
+
     pub fn on_tick(&mut self) {
         // Spinner frame: one step per 80 ms regardless of the housekeeping rate.
         static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -2295,6 +2360,9 @@ impl App {
         let spun = frame != self.tick;
         self.tick = frame;
         self.note_heard();
+        if !self.live_doubted.is_empty() {
+            self.settle_doubts();
+        }
         if self.dirty_at.is_some_and(|t| t.elapsed() >= DOC_FLUSH) {
             self.flush_doc();
         }
@@ -2693,6 +2761,43 @@ mod connection_tests {
 
     fn node(id: &str) -> Node {
         serde_json::from_value(serde_json::json!({ "id": id, "kind": "session", "name": id, "x": 0, "y": 0, "reviewed_ms": 1 })).unwrap()
+    }
+
+    #[test]
+    fn live_left_over_from_a_terminal_that_ended_here_is_doubted_until_news_comes() {
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let doc = Doc { nodes: vec![node("s1"), node("s2")], ..Doc::default() };
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(doc), false, ".".into(), app_tx, None);
+        let live = |id: &str| SessionSummary { id: id.into(), live: true, tracked: true, updated_ms: 1, ..Default::default() };
+        app.on_service(ServiceMsg::Sessions { full: true, upsert: vec![live("s1"), live("s2")], remove: Vec::new() });
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "s1".into(), alive: true, started_ms: 1, ..Default::default() }]));
+        // Its terminal ends here; the summary saying it is no longer live never comes (an older host lost it).
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "s1".into(), alive: false, exit_code: Some(0), started_ms: 1, ..Default::default() }]));
+        let elsewhere = |app: &App, id: &str| app.live_elsewhere(app.doc.node(id).unwrap());
+        app.on_tick();
+        assert!(elsewhere(&app, "s1"), "not at once: the index may not have looked yet");
+        assert!(elsewhere(&app, "s2"), "a session that never ran here is not doubted");
+        app.live_doubted.get_mut("s1").unwrap().since -= LIVE_DOUBT;
+        app.on_tick();
+        assert!(!elsewhere(&app, "s1") && app.node_status(app.doc.node("s1").unwrap()) == Status::Stopped);
+        // The same summary again (a reconnect's whole list) is no news …
+        app.on_service(ServiceMsg::Sessions { full: true, upsert: vec![live("s1"), live("s2")], remove: Vec::new() });
+        assert!(!elsewhere(&app, "s1"));
+        // … a changed one is believed (opened elsewhere since).
+        app.on_service(ServiceMsg::Sessions { full: false, upsert: vec![SessionSummary { updated_ms: 2, ..live("s1") }], remove: Vec::new() });
+        assert!(elsewhere(&app, "s1") && app.live_doubted.is_empty());
+        // A terminal gone from the list after a reconnect (a restarted service) ended too.
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "s2".into(), alive: true, started_ms: 1, ..Default::default() }]));
+        app.reset_service_state();
+        app.on_service(ServiceMsg::Terminals(Vec::new()));
+        assert_eq!(app.node_status(app.doc.node("s2").unwrap()), Status::External, "live, not running here");
+        app.live_doubted.get_mut("s2").unwrap().since -= LIVE_DOUBT;
+        app.on_tick();
+        assert_eq!(app.node_status(app.doc.node("s2").unwrap()), Status::Stopped);
+        // Running again here: no doubt left.
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "s2".into(), alive: true, started_ms: 2, ..Default::default() }]));
+        assert!(app.live_doubted.is_empty());
     }
 
     #[test]

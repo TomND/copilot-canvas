@@ -1414,7 +1414,9 @@ and `docs/REMOTE.md`.
   PID reuse) right before every launch and refuses, with its reason shown on
   the box and in a notice. The client's ↗ is only a hint (its copy can lag a
   second behind, e.g. right after a session exits here), so Start / Resume
-  always ask the service.
+  always ask the service. A session whose terminal ended here and whose
+  history still says live 5 s later, with no news of it since, is shown
+  stopped (or interrupted) instead of ↗ (an update an older service lost).
 - Sessions start with **`--allow-all`** by default (tools, paths and URLs
   without asking), on every launch including resumes. Set *Settings ›
   Permissions* to `ask` for the normal approval prompts, for everything or
