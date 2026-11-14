@@ -43,6 +43,24 @@ impl PrefsFile {
         Some(prefs)
     }
 
+    /// The backend's facts as the last run got them (`App::new` starts with
+    /// them and asks the backend again in the background).
+    pub fn load_info(&self) -> Option<crate::rpc::BackendInfo> {
+        serde_json::from_slice(&std::fs::read(self.path.with_extension("backend.json")).ok()?).ok()
+    }
+
+    /// Keeps the backend's facts for the next start (atomically).
+    pub fn save_info(&self, info: &crate::rpc::BackendInfo) -> Result<()> {
+        let path = self.path.with_extension("backend.json");
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        std::fs::write(&temp, serde_json::to_vec(info)?)?;
+        std::fs::rename(&temp, &path)?;
+        Ok(())
+    }
+
     /// Where this client's unsent canvas changes are kept.
     fn unsent_path(&self) -> PathBuf {
         self.path.with_extension("unsent.json")

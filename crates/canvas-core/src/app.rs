@@ -482,10 +482,21 @@ impl App {
                 }
             }
         }
-        let (info, info_error) = match backend.info() {
+        // The backend's facts as the last run got them, asked for again in
+        // the background (a remote service's round trip, or the local agents'
+        // lookup, no longer delays the first frame); asked now the first time.
+        let cached = prefs.as_ref().and_then(PrefsFile::load_info);
+        let refresh = cached.is_some();
+        let (info, info_error) = match cached.map_or_else(|| backend.info(), Ok) {
             Ok(info) => (info, None),
             Err(error) => (BackendInfo::default(), Some(format!("{error:#}"))),
         };
+        if !refresh
+            && info_error.is_none()
+            && let Some(file) = &prefs
+        {
+            let _ = file.save_info(&info);
+        }
         // A remote service is not asked here (one round trip less before the
         // first frame): the first automations load, in the background, says it.
         let automations_folder = if conn.remote { String::new() } else { backend.automations_dir(doc.automations_dir.clone()).unwrap_or_default() };
@@ -652,12 +663,47 @@ impl App {
         }
         let differs = app.conn.remote_build_differs().map(str::to_owned);
         app.note_mixed_builds(differs);
+        if refresh {
+            app.refresh_backend_info();
+        }
         if restored > 0 {
             app.unsent_pending = true;
             app.mark_dirty();
             app.notify(format!("{restored} canvas change(s) not sent before Atelier closed last time go to the service now."), false);
         }
         app
+    }
+
+    /// Asks the backend for its facts on a background thread; they replace
+    /// the copy the app started with when they come.
+    fn refresh_backend_info(&self) {
+        let (backend, tx) = (self.backend.clone(), self.app_tx.clone());
+        let _ = std::thread::Builder::new().name("backend-info".into()).spawn(move || {
+            let info = backend.info();
+            let _ = tx.send(AppEvent::Run(Box::new(move |app: &mut App| match info {
+                Ok(info) => app.set_backend_info(info),
+                Err(error) => app.notify(format!("The backend did not answer: {error:#}"), true),
+            })));
+        });
+    }
+
+    /// The backend's facts, as they are now (kept for the next start).
+    pub fn set_backend_info(&mut self, info: BackendInfo) {
+        if info == self.info {
+            return;
+        }
+        // The agent the configuration views show follows the machine's, unless chosen.
+        if self.config_agent == self.detected_agent && self.doc.default_agent.as_deref().and_then(AgentKind::parse).is_none() {
+            self.config_agent = info.default_agent;
+        }
+        self.detected_agent = info.default_agent;
+        self.installed_agents = info.installed.clone();
+        if let Some(file) = &self.prefs {
+            let _ = file.save_info(&info);
+        }
+        self.info = info;
+        self.side_rows_key = 0;
+        self.needs_draw = true;
     }
 
     // ---------- notices & persistence ----------
@@ -2979,6 +3025,48 @@ mod connection_tests {
         let mut app = app;
         app.save_now();
         assert!(crate::prefs::PrefsFile::new(prefs.clone()).load_unsent().is_none());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn the_backends_facts_come_from_the_last_run_and_are_asked_again_in_the_background() {
+        use crate::rpc::{Request, Response};
+        struct Facts(std::sync::Mutex<(BackendInfo, u32)>);
+        impl Backend for Facts {
+            fn call(&self, request: Request) -> anyhow::Result<Response> {
+                let mut facts = self.0.lock().unwrap();
+                match request {
+                    Request::Info => {
+                        facts.1 += 1;
+                        Ok(Response::Info(facts.0.clone()))
+                    }
+                    other => Err(anyhow::anyhow!("no {}", other.name())),
+                }
+            }
+        }
+        let home = std::env::temp_dir().join(format!("cc-info-{}", uuid::Uuid::new_v4()));
+        let prefs = crate::prefs::PrefsFile::path(&home, "default", "k");
+        let first = BackendInfo { home: "/h".into(), installed: vec![AgentKind::Copilot], ..Default::default() };
+        let backend = Arc::new(Facts(std::sync::Mutex::new((first.clone(), 0))));
+        let start = || {
+            let (conn, _sent) = detached();
+            let (app_tx, app_rx) = unbounded();
+            let app = App::new(conn, backend.clone(), Opened::detached(Doc::default()), false, ".".into(), app_tx, Some(prefs.clone()));
+            (app, app_rx)
+        };
+        // The first start asks at once and keeps the answer.
+        let (app, _events) = start();
+        assert_eq!((app.info.clone(), backend.0.lock().unwrap().1), (first.clone(), 1));
+        drop(app);
+        // The next one starts with that copy and asks again in the background.
+        let now = BackendInfo { installed: vec![AgentKind::Copilot, AgentKind::Claude], ..first.clone() };
+        backend.0.lock().unwrap().0 = now.clone();
+        let (mut app, events) = start();
+        assert_eq!(app.info, first, "no round trip before the first frame");
+        let event = events.recv_timeout(std::time::Duration::from_secs(5)).expect("asked in the background");
+        app.on_app_event(event);
+        assert_eq!((app.info.clone(), app.installed_agents.clone()), (now.clone(), now.installed.clone()));
+        assert_eq!(crate::prefs::PrefsFile::new(prefs.clone()).load_info(), Some(now), "kept for the next start");
         let _ = std::fs::remove_dir_all(home);
     }
 
