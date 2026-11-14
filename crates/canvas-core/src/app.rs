@@ -3485,15 +3485,21 @@ mod connection_tests {
         assert_eq!(*backend.0.lock().unwrap(), 1, "not before its time");
         app.info_check = InfoCheck::Retry { at: Instant::now(), tries: 1 };
         app.on_tick();
-        let event = events.recv_timeout(Duration::from_secs(5)).expect("asked again");
-        app.on_app_event(event);
+        // Other background answers (the first automations poll) may come first.
+        let until = |app: &mut App, what: &str, done: &dyn Fn(&App) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !done(app) {
+                let event = events.recv_timeout(deadline.saturating_duration_since(Instant::now())).unwrap_or_else(|_| panic!("{what}"));
+                app.on_app_event(event);
+            }
+        };
+        until(&mut app, "asked again", &|app| app.info.home == "/h2");
         assert_eq!((app.info.home.as_str(), app.info_check), ("/h2", InfoCheck::Idle));
         // A reconnect (a restarted service) asks once more.
         let (conn, _sent) = detached();
         app.on_reconnected(Ok(conn));
         app.on_reconnected(Err("again".into()));
-        let event = events.recv_timeout(Duration::from_secs(5)).expect("asked after the reconnect");
-        app.on_app_event(event);
+        until(&mut app, "asked after the reconnect", &|app| app.info.home == "/h3");
         assert_eq!(app.info.home, "/h3");
         assert_eq!(*backend.0.lock().unwrap(), 3);
     }
