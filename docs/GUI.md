@@ -86,7 +86,10 @@ tick (after input and a frame) and the loop comes back at once
 (`WaitUntil(now)`): posting another wake-up instead came back before any
 keystroke on Windows (posted messages are dispatched before input, and
 winit drains the queue before `AboutToWait`, where frames are drawn), so a
-backlog delayed every key and frame until it was gone. A window that cannot
+backlog delayed every key and frame until it was gone. The wake-up stays
+marked as posted while a slice runs and while leftovers wait, and is cleared
+only when the queue is seen empty (then looked at once more), so messages
+that keep arriving during a burst post no wake-up ahead of input either. A window that cannot
 draw (no GPU yet or any more, minimized, not laid out) has no frame due, so
 the loop waits instead of spinning; closing a window closes its connection
 (the service forgets its subscriptions and size wishes at once). App events
