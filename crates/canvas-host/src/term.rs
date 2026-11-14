@@ -1120,13 +1120,16 @@ impl Terminal {
 
     /// Records the console the program is attached to, as the system
     /// reports it for every process on it, while it runs (Windows: read
-    /// once; the agent's end compares with it after the agent is gone).
+    /// once; the agent's end compares with it after the agent is gone). Not
+    /// the service's own: a process that has not attached to its
+    /// pseudoconsole yet may still report its parent's.
     fn note_console(&self) {
         #[cfg(windows)]
         if self.console.get().is_none()
             && self.alive.load(Ordering::Acquire)
             && canvas_sys::process::process_start_ms(self.pid) == Some(self.root_started)
             && let Some(console) = canvas_sys::process::console_of(self.pid)
+            && Some(console) != canvas_sys::process::console_of(std::process::id())
         {
             let _ = self.console.set(console);
         }
@@ -2753,8 +2756,9 @@ mod tests {
         let table = canvas_sys::process::process_entries();
         let describe = |pid: Option<u32>| table.iter().find(|(p, _, _)| Some(*p) == pid).map(|(p, parent, name)| format!("{name} {p} (parent {parent})"));
         let facts = format!(
-            "this process {}; the pseudoconsole's host found at its opening: {:?}; the agent's console: {:?}; attached's: {:?}; detached's: {:?}",
+            "this process {} (its console {:?}); the pseudoconsole's host found at its opening: {:?}; the agent's console: {:?}; attached's: {:?}; detached's: {:?}",
             std::process::id(),
+            describe(canvas_sys::process::console_of(std::process::id())),
             describe(terminal.console_host.map(|(pid, _)| pid)),
             describe(console),
             describe(canvas_sys::process::console_of(attached)),
