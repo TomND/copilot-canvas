@@ -99,7 +99,7 @@ pub fn kill_started(pid: u32, started: u64) -> bool {
 /// session (`portable-pty` makes its first process the session's leader,
 /// so the session id is that process's pid) until they start one of their
 /// own (`setsid`: a daemon, or a terminal of their own).
-pub fn console_of(pid: u32) -> Option<u32> {
+pub fn session_of(pid: u32) -> Option<u32> {
     if pid == 0 || pid > i32::MAX as u32 {
         return None;
     }
@@ -369,9 +369,9 @@ mod tests {
         let mut stays = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
         // SAFETY: setsid is async-signal-safe.
         let mut leaves = unsafe { std::process::Command::new("/bin/sleep").arg("30").pre_exec(|| if libc::setsid() < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }).spawn().unwrap() };
-        assert_eq!(console_of(stays.id()), console_of(me), "a child stays in the session");
-        assert_eq!(console_of(leaves.id()), Some(leaves.id()), "a daemon leads a session of its own");
-        assert_eq!(console_of(0), None);
+        assert_eq!(session_of(stays.id()), session_of(me), "a child stays in the session");
+        assert_eq!(session_of(leaves.id()), Some(leaves.id()), "a daemon leads a session of its own");
+        assert_eq!(session_of(0), None);
         let started = process_start_ms(stays.id()).unwrap();
         assert!(!kill_started(stays.id(), started + 1), "not another process of that pid");
         assert!(alive(stays.id()));

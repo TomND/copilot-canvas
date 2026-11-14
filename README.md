@@ -1445,8 +1445,9 @@ and `docs/REMOTE.md`.
   exits (on its own: a crash, `/exit`; or stopped) takes with it what still
   holds its terminal or its session: its own CLI, also one whose launcher is
   gone (it holds the session's in-use lock), and what is still attached to its
-  terminal (its console on Windows, its session on macOS and Linux), which
-  gets 2 s to quit by itself first (an MCP server whose input closed). What
+  terminal (Windows: closing its console ends those, each getting the
+  console's close event first; macOS and Linux: what is still in its session,
+  after 2 s to quit by itself, as an MCP server whose input closed does). What
   it started detached keeps running, as it would outside the canvas: a server
   it started with a console of its own (`Start-Process`, `start`), a VS Code,
   build and cache servers other sessions use (MSBuild nodes, VBCSCompiler,

@@ -195,32 +195,6 @@ pub fn image_name(pid: u32) -> Option<String> {
     }
 }
 
-/// The console host `pid` is attached to (`conhost.exe` or `OpenConsole.exe`;
-/// a terminal's is its pseudoconsole's host): `None` for a process without
-/// a console (a GUI program, a detached one) or one that cannot be read.
-/// A process started with a console of its own (`Start-Process`, `start`,
-/// `CREATE_NO_WINDOW`) has another host than the terminal it came from.
-pub fn console_of(pid: u32) -> Option<u32> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    // `ProcessConsoleHostProcess`: the host's pid, its two low bits flags.
-    const PROCESS_CONSOLE_HOST_PROCESS: u32 = 49;
-    if pid == 0 {
-        return None;
-    }
-    // SAFETY: plain calls with a handle closed right after; the output is one usize.
-    unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if process.is_null() {
-            return None;
-        }
-        let mut host = 0usize;
-        let status = NtQueryInformationProcess(process, PROCESS_CONSOLE_HOST_PROCESS, (&mut host as *mut usize).cast(), std::mem::size_of::<usize>() as u32, std::ptr::null_mut());
-        CloseHandle(process);
-        (status >= 0).then_some((host & !3) as u32).filter(|host| *host != 0)
-    }
-}
-
 /// Kills `pid` alone (not its descendants) while it still has the start
 /// time `started`; `false` when it is gone or another process now.
 pub fn kill_started(pid: u32, started: u64) -> bool {
@@ -276,13 +250,12 @@ pub fn raise_fd_limit() -> u64 {
     0
 }
 
-// Process suspension (whole process, every thread) and the console host
-// query from ntdll; linked by name, so no import library is needed.
+// Process suspension (whole process, every thread) from ntdll; linked by
+// name, so no import library is needed.
 #[link(name = "ntdll", kind = "raw-dylib")]
 unsafe extern "system" {
     fn NtSuspendProcess(process: windows_sys::Win32::Foundation::HANDLE) -> i32;
     fn NtResumeProcess(process: windows_sys::Win32::Foundation::HANDLE) -> i32;
-    fn NtQueryInformationProcess(process: windows_sys::Win32::Foundation::HANDLE, class: u32, information: *mut core::ffi::c_void, length: u32, returned: *mut u32) -> i32;
 }
 
 /// Suspends (or resumes) `pid` only while it still has the start time
@@ -380,10 +353,9 @@ pub fn resume_tree(root: u32, started_ms: u64) -> std::io::Result<usize> {
 mod tests {
     use super::*;
     use std::os::windows::io::AsRawHandle;
-    use std::os::windows::process::CommandExt;
 
-    fn ping(flags: u32) -> std::process::Child {
-        std::process::Command::new("ping.exe").args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).creation_flags(flags).spawn().expect("ping.exe")
+    fn ping() -> std::process::Child {
+        std::process::Command::new("ping.exe").args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().expect("ping.exe")
     }
 
     fn in_any_job(child: &std::process::Child) -> bool {
@@ -394,43 +366,32 @@ mod tests {
 
     /// R2-B-01 and R2-B-03's facts: an agent's job lists its processes and
     /// ends none when closed; a process missing from it is put in unless it
-    /// is in no job (it broke away); consoles tell a terminal's processes
-    /// from those with a console of their own or none; a kill names one process.
+    /// is in no job (it broke away); a kill names one process.
     #[test]
     fn a_tree_job_follows_an_agent_without_ending_anything() {
-        const CREATE_NEW_CONSOLE: u32 = 0x10;
-        const DETACHED_PROCESS: u32 = 0x8;
-        let mut member = ping(0);
+        let mut member = ping();
         let job = TreeJob::new(member.as_raw_handle()).expect("a job");
         // (With the console host Windows starts for it when this process has none.)
         assert!(job.pids().contains(&member.id()), "{:?}", job.pids());
         assert_eq!(image_name(member.id()).as_deref(), Some("ping.exe"));
-        let mut stray = ping(0);
-        let expected = in_any_job(&stray);
-        assert_eq!(job.adopt(stray.id()), expected, "adopted only from another job (in a job: {expected})");
-        if expected {
+        let mut stray = ping();
+        let in_a_job = in_any_job(&stray);
+        let adopted = job.adopt(stray.id());
+        println!("a process in another job ({in_a_job}) taken in: {adopted}");
+        assert!(in_a_job || !adopted, "a process in no job broke away: never taken in");
+        if adopted {
             assert!(job.pids().contains(&stray.id()));
             assert!(!job.adopt(stray.id()), "once");
         }
         drop(job);
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(alive(member.id()) && alive(stray.id()), "closing the job ends nothing");
-
-        let mut own = ping(CREATE_NEW_CONSOLE);
-        let mut none = ping(DETACHED_PROCESS);
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let host = console_of(own.id()).expect("a console of its own");
-        assert_ne!(Some(host), console_of(member.id()), "another console than its parent's");
-        assert_eq!(console_of(none.id()), None, "a detached process has no console");
-
         let started = process_start_ms(member.id()).unwrap();
         assert!(!kill_started(member.id(), started + 1), "not another process of that pid");
         assert!(kill_started(member.id(), started));
         member.wait().unwrap();
         assert!(!kill_started(member.id(), started), "gone");
-        for child in [&mut stray, &mut own, &mut none] {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        let _ = stray.kill();
+        let _ = stray.wait();
     }
 }

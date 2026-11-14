@@ -57,8 +57,8 @@ const CONTROL_BURST: u32 = 64;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long an agent gets to quit on a stop request before it is killed ([`Terminal::stop`]).
 pub const STOP_GRACE: Duration = Duration::from_secs(10);
-/// How long what an agent left attached to its terminal gets to end by
-/// itself once the agent exited (an MCP server whose input closed saves
+/// How long what an agent left in its terminal's session (Unix) gets to end
+/// by itself once the agent exited (an MCP server whose input closed saves
 /// its state and quits) before it is ended ([`end_lingering`]).
 const LEFTOVER_GRACE: Duration = Duration::from_secs(2);
 /// How long a snapshot request waits for its answer.
@@ -305,9 +305,6 @@ pub struct Terminal {
     /// started are its own and end with it (Windows; Unix tells by session).
     #[cfg(windows)]
     program: Option<String>,
-    /// The console the program's processes report ([`Terminal::note_console`]).
-    #[cfg(windows)]
-    console: OnceLock<u32>,
 }
 
 /// An image's pixels as a PNG file, shared by every client that needs it.
@@ -554,13 +551,7 @@ impl Terminal {
             job_error: Mutex::new(job_error),
             #[cfg(windows)]
             program,
-            #[cfg(windows)]
-            console: OnceLock::new(),
         });
-        // An agent's console, if it is attached already (else read later, R2-B-01).
-        if spec.copilot {
-            terminal.note_console();
-        }
         // Weak: the emulator thread must not keep the terminal alive.
         let weak = Arc::downgrade(&terminal);
         let fail: FailHook = Box::new(move |message| {
@@ -668,8 +659,6 @@ impl Terminal {
             job_error: Mutex::new(None),
             #[cfg(windows)]
             program: None,
-            #[cfg(windows)]
-            console: OnceLock::new(),
         });
         let weak = Arc::downgrade(&terminal);
         let fail: FailHook = Box::new(move |message| {
@@ -1078,13 +1067,14 @@ impl Terminal {
         let _ = lock(&self.killer).kill();
     }
 
-    /// What the program leaves that ends with it (R2-B-01): what is still
-    /// attached to its terminal (its console on Windows, its session on
-    /// Unix), and an agent's own program (its CLI, which holds the session's
-    /// lock, S3-14), each as (pid, start time, its own program). What it
-    /// started with a console of its own or none (a server, a VS Code, a
-    /// build server other sessions use), in a session of its own, or that
-    /// broke away from its job keeps running ([`canvas_sys::process::leftovers`]).
+    /// What the program leaves that ends with it (R2-B-01): an agent's own
+    /// program (its CLI, which holds the session's lock, S3-14), and what is
+    /// still in its terminal's session (Unix; on Windows closing the
+    /// pseudoconsole ends what is still attached to it), each as (pid, start
+    /// time, its own program). What it started with a console of its own or
+    /// none (a server, a VS Code, a build server other sessions use), in a
+    /// session of its own, or that broke away from its job keeps running
+    /// ([`canvas_sys::process::leftovers`]).
     fn leftovers(&self) -> Vec<(u32, u64, bool)> {
         if self.pid == 0 {
             return Vec::new();
@@ -1094,52 +1084,31 @@ impl Terminal {
     }
 
     /// The processes an agent started, from its job (Windows: also those
-    /// whose parents are gone; none without a job, whose console the
-    /// pseudoconsole's closing ends anyway).
+    /// whose parents are gone). None counts as attached here: closing the
+    /// pseudoconsole ends what is still attached to it (each process gets
+    /// the console's close event first), as it did before the job (S3-14),
+    /// so only the agent's own program is ended explicitly.
     #[cfg(windows)]
     fn started_processes(&self) -> (Option<&str>, Vec<canvas_sys::process::Leftover>) {
-        use canvas_sys::process::{Leftover, console_of, process_entries, process_start_ms};
+        use canvas_sys::process::{Leftover, process_entries, process_start_ms};
         let Some(pids) = lock(&self.job).as_ref().map(|job| job.pids()) else { return (None, Vec::new()) };
-        self.note_console();
-        // The console the program's processes report, and its host as found
-        // when the pseudoconsole was opened.
-        let host = self.console_host.filter(|(pid, started)| process_start_ms(*pid) == Some(*started)).map(|(pid, _)| pid);
-        let consoles: Vec<u32> = self.console.get().copied().into_iter().chain(host).collect();
         let table: HashMap<u32, (u32, String)> = process_entries().into_iter().map(|(pid, parent, name)| (pid, (parent, name))).collect();
         let found = pids
             .into_iter()
             .filter(|pid| *pid != self.pid)
             .filter_map(|pid| {
                 let (parent, name) = table.get(&pid)?.clone();
-                let attached = console_of(pid).is_some_and(|console| consoles.contains(&console));
-                Some(Leftover { pid, parent, started: process_start_ms(pid)?, name, attached })
+                Some(Leftover { pid, parent, started: process_start_ms(pid)?, name, attached: false })
             })
             .collect();
         (self.program.as_deref(), found)
-    }
-
-    /// Records the console the program is attached to, as the system
-    /// reports it for every process on it, while it runs (Windows: read
-    /// once; the agent's end compares with it after the agent is gone). Not
-    /// the service's own: a process that has not attached to its
-    /// pseudoconsole yet may still report its parent's.
-    fn note_console(&self) {
-        #[cfg(windows)]
-        if self.console.get().is_none()
-            && self.alive.load(Ordering::Acquire)
-            && canvas_sys::process::process_start_ms(self.pid) == Some(self.root_started)
-            && let Some(console) = canvas_sys::process::console_of(self.pid)
-            && Some(console) != canvas_sys::process::console_of(std::process::id())
-        {
-            let _ = self.console.set(console);
-        }
     }
 
     /// The processes still in the terminal's session (Unix: its first
     /// process leads it; only its descendants can be in it).
     #[cfg(unix)]
     fn started_processes(&self) -> (Option<&str>, Vec<canvas_sys::process::Leftover>) {
-        use canvas_sys::process::{Leftover, console_of, process_entries, process_start_ms};
+        use canvas_sys::process::{Leftover, process_entries, process_start_ms, session_of};
         // A session's id is not given to another process while the session
         // lives; a leader running again under it is another process.
         if process_start_ms(self.pid).is_some_and(|started| started != self.root_started) {
@@ -1147,7 +1116,7 @@ impl Terminal {
         }
         let found = process_entries()
             .into_iter()
-            .filter(|(pid, _, _)| *pid != self.pid && console_of(*pid) == Some(self.pid))
+            .filter(|(pid, _, _)| *pid != self.pid && session_of(*pid) == Some(self.pid))
             .filter_map(|(pid, parent, name)| Some(Leftover { pid, parent, started: process_start_ms(pid)?, name, attached: true }))
             .collect();
         (None, found)
@@ -1155,7 +1124,7 @@ impl Terminal {
 
     /// An agent that exited on its own (R2-B-01, S3-14): its own program
     /// ends now (a CLI left behind holds the session's lock); the rest of
-    /// what is still attached to its terminal is answered, to end after
+    /// what is still in its session (Unix) is answered, to end after
     /// [`LEFTOVER_GRACE`] unless it ends by itself first ([`end_lingering`]).
     fn end_own_leftovers(&self) -> Vec<(u32, u64)> {
         let mut rest = Vec::new();
@@ -1172,7 +1141,6 @@ impl Terminal {
     /// Puts an agent's processes started before it was in its job there
     /// (R2-B-03; Windows, while it is young). Answers how many.
     pub fn adopt_strays(&self) -> usize {
-        self.note_console();
         #[cfg(windows)]
         if let Some(job) = lock(&self.job).as_ref() {
             return job.adopt_tree(self.pid, self.root_started);
@@ -1804,8 +1772,8 @@ fn spawn_waiter(terminal: Arc<Terminal>, mut child: Box<dyn portable_pty::Child 
             std::thread::sleep(Duration::from_millis(150));
             terminal.alive.store(false, Ordering::Release);
             // What an agent left (R2-B-01): its own program ends now; what is
-            // still attached to its terminal gets a moment, with the
-            // pseudoconsole open (closing it ends what is attached at once).
+            // still in its session (Unix) gets a moment to end by itself. On
+            // Windows closing the pseudoconsole ends what is attached to it.
             let lingering = if terminal.copilot { terminal.end_own_leftovers() } else { Vec::new() };
             if lingering.is_empty() {
                 terminal.close_pty();
@@ -2713,7 +2681,7 @@ mod tests {
             let terminal = sh(if agent { "agent-leaves" } else { "shell-leaves" }, script, agent);
             let pids = printed_pids(&terminal, &["attached", "detached"]);
             let (attached, detached) = (pids[0], pids[1]);
-            wait_long("the daemon has a session of its own", || canvas_sys::process::console_of(detached) == Some(detached));
+            wait_long("the daemon has a session of its own", || canvas_sys::process::session_of(detached) == Some(detached));
             let picked: Vec<u32> = terminal.leftovers().iter().map(|(pid, _, _)| *pid).collect();
             assert!(picked.contains(&attached) && !picked.contains(&detached), "attached {attached}, detached {detached}: {picked:?}");
             terminal.send_input(&Input::Raw(b"\r".to_vec())).unwrap();
@@ -2733,10 +2701,10 @@ mod tests {
     }
 
     /// R2-B-01 (S3-14 narrowed) on Windows: when an agent exits on its own,
-    /// what is still attached to its pseudoconsole ends with it, and so does
-    /// its own program in a console of its own (as the CLI a launcher starts
-    /// holds the session's lock); a server it started with a console of its
-    /// own (`Start-Process`) keeps running.
+    /// its own program ends with it, also in a console of its own (as the
+    /// CLI a launcher starts holds the session's lock), and so does what is
+    /// still attached to its pseudoconsole (its closing ends it); a server
+    /// it started with a console of its own (`Start-Process`) keeps running.
     #[test]
     #[cfg(windows)]
     fn an_agent_that_exits_ends_what_is_attached_to_its_terminal_and_leaves_what_detached() {
@@ -2752,31 +2720,14 @@ mod tests {
         let terminal = Terminal::spawn(spec, hooks).expect("spawn powershell.exe");
         let pids = printed_pids(&terminal, &["attached", "detached", "own"]);
         let (attached, detached, own) = (pids[0], pids[1], pids[2]);
-        let console = canvas_sys::process::console_of(terminal.pid);
-        let table = canvas_sys::process::process_entries();
-        let describe = |pid: Option<u32>| table.iter().find(|(p, _, _)| Some(*p) == pid).map(|(p, parent, name)| format!("{name} {p} (parent {parent})"));
-        let facts = format!(
-            "this process {} (its console {:?}); the pseudoconsole's host found at its opening: {:?}; the agent's console: {:?}; attached's: {:?}; detached's: {:?}",
-            std::process::id(),
-            describe(canvas_sys::process::console_of(std::process::id())),
-            describe(terminal.console_host.map(|(pid, _)| pid)),
-            describe(console),
-            describe(canvas_sys::process::console_of(attached)),
-            describe(canvas_sys::process::console_of(detached)),
-        );
-        println!("{facts}");
-        assert!(console.is_some(), "the agent has a console: {facts}");
-        assert_eq!(canvas_sys::process::console_of(attached), console, "Start-Process -NoNewWindow stays in the terminal's console: {facts}");
-        assert_ne!(canvas_sys::process::console_of(detached), console, "Start-Process gives a console of its own: {facts}");
         let picked = terminal.leftovers();
-        assert!(picked.iter().any(|&(pid, _, mine)| pid == attached && !mine), "attached {attached}: {picked:?}");
         assert!(picked.iter().any(|&(pid, _, mine)| pid == own && mine), "its own program {own}: {picked:?}");
         assert!(!picked.iter().any(|&(pid, _, _)| pid == detached), "detached {detached}: {picked:?}");
         terminal.send_input(&Input::Raw(b"\r".to_vec())).unwrap();
         wait_exit(&terminal, Duration::from_secs(30));
         assert!(!terminal.was_forced(), "it exited on its own");
         wait_long("its own program ended with it", || !canvas_sys::process::alive(own));
-        wait_long("what stayed in its console ended with it", || !canvas_sys::process::alive(attached));
+        wait_long("what stayed in its pseudoconsole ended with it", || !canvas_sys::process::alive(attached));
         std::thread::sleep(Duration::from_millis(500));
         assert!(canvas_sys::process::alive(detached), "a server with a console of its own outlives the agent");
         let _ = canvas_sys::process::kill_tree(detached);

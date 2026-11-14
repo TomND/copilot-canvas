@@ -49,8 +49,8 @@ pub struct Leftover {
     pub started: u64,
     /// Lowercase executable name, as [`process_entries`] gives it.
     pub name: String,
-    /// Still attached to the agent's terminal: its console (Windows) or its
-    /// session (Unix), as [`console_of`] tells.
+    /// Still attached to the agent's terminal (Unix: in its session, as
+    /// `session_of` tells; on Windows closing the pseudoconsole ends those).
     pub attached: bool,
 }
 
