@@ -568,7 +568,8 @@ impl Agents {
         let group_skills = canvas_model::launch::take_group_skills(&mut launch);
         // Never become a second writer for a session running elsewhere (who has it is named).
         if launch.resume {
-            self.refuse_live(id, kind, &session)?;
+            // A passive run (headless, on the bus loop) never waits: it is retried later.
+            self.refuse_live(id, kind, &session, launch.headless_prompt.is_none())?;
         }
         // Nor for one another box of this service runs or is starting right
         // now (before the agent wrote its own lock): claimed under one lock.
@@ -851,7 +852,7 @@ impl HostApp for Agents {
         };
         anyhow::ensure!(is_session_id(id), "refusing to launch an invalid session id");
         // Never become a second writer for a session running elsewhere (who has it is named).
-        self.refuse_live(id, AgentKind::Copilot, id)?;
+        self.refuse_live(id, AgentKind::Copilot, id, true)?;
         anyhow::ensure!(
             !extra.iter().any(|a| a == "--session-id" || a == "--resume" || a == "-r" || a == "--continue"),
             "launch options may not select a different session"
@@ -1447,16 +1448,17 @@ impl Agents {
     /// Refuses to become a second writer of agent session `session` (live in
     /// another process), naming who has it. Held by this box's own earlier
     /// CLI that is still closing (a Stop, then Resume at once): waited for, up
-    /// to [`OWN_CLOSE_WAIT`], then started; refused only if it is still there,
-    /// and then not as "already running" (it is open nowhere else, R2-C-09).
-    fn refuse_live(&self, id: &str, kind: AgentKind, session: &str) -> Result<()> {
+    /// to [`OWN_CLOSE_WAIT`] (`wait`), then started; refused only if it is
+    /// still there, and then not as "already running" (it is open nowhere
+    /// else, R2-C-09).
+    fn refuse_live(&self, id: &str, kind: AgentKind, session: &str, wait: bool) -> Result<()> {
         let live = || kind.provider().is_live(session);
         if !live() {
             return Ok(());
         }
         let holder = self.holder(kind, session);
         let own = matches!(&holder, Some(Holder::Terminal(terminal, ..)) if terminal == id);
-        if own && !still_live(&live, OWN_CLOSE_WAIT) {
+        if own && wait && !still_live(&live, OWN_CLOSE_WAIT) {
             log(&self.instance, &format!("terminal {id}: waited for its own earlier {} to close", kind.id()));
             return Ok(());
         }
