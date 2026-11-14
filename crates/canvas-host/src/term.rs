@@ -305,6 +305,9 @@ pub struct Terminal {
     /// started are its own and end with it (Windows; Unix tells by session).
     #[cfg(windows)]
     program: Option<String>,
+    /// The console the program's processes report ([`Terminal::note_console`]).
+    #[cfg(windows)]
+    console: OnceLock<u32>,
 }
 
 /// An image's pixels as a PNG file, shared by every client that needs it.
@@ -551,7 +554,13 @@ impl Terminal {
             job_error: Mutex::new(job_error),
             #[cfg(windows)]
             program,
+            #[cfg(windows)]
+            console: OnceLock::new(),
         });
+        // An agent's console, if it is attached already (else read later, R2-B-01).
+        if spec.copilot {
+            terminal.note_console();
+        }
         // Weak: the emulator thread must not keep the terminal alive.
         let weak = Arc::downgrade(&terminal);
         let fail: FailHook = Box::new(move |message| {
@@ -659,6 +668,8 @@ impl Terminal {
             job_error: Mutex::new(None),
             #[cfg(windows)]
             program: None,
+            #[cfg(windows)]
+            console: OnceLock::new(),
         });
         let weak = Arc::downgrade(&terminal);
         let fail: FailHook = Box::new(move |message| {
@@ -1089,17 +1100,36 @@ impl Terminal {
     fn started_processes(&self) -> (Option<&str>, Vec<canvas_sys::process::Leftover>) {
         use canvas_sys::process::{Leftover, console_of, process_entries, process_start_ms};
         let Some(pids) = lock(&self.job).as_ref().map(|job| job.pids()) else { return (None, Vec::new()) };
-        let console = self.console_host.filter(|(pid, started)| process_start_ms(*pid) == Some(*started)).map(|(pid, _)| pid);
+        self.note_console();
+        // The console the program's processes report, and its host as found
+        // when the pseudoconsole was opened.
+        let host = self.console_host.filter(|(pid, started)| process_start_ms(*pid) == Some(*started)).map(|(pid, _)| pid);
+        let consoles: Vec<u32> = self.console.get().copied().into_iter().chain(host).collect();
         let table: HashMap<u32, (u32, String)> = process_entries().into_iter().map(|(pid, parent, name)| (pid, (parent, name))).collect();
         let found = pids
             .into_iter()
             .filter(|pid| *pid != self.pid)
             .filter_map(|pid| {
                 let (parent, name) = table.get(&pid)?.clone();
-                Some(Leftover { pid, parent, started: process_start_ms(pid)?, name, attached: console.is_some() && console_of(pid) == console })
+                let attached = console_of(pid).is_some_and(|console| consoles.contains(&console));
+                Some(Leftover { pid, parent, started: process_start_ms(pid)?, name, attached })
             })
             .collect();
         (self.program.as_deref(), found)
+    }
+
+    /// Records the console the program is attached to, as the system
+    /// reports it for every process on it, while it runs (Windows: read
+    /// once; the agent's end compares with it after the agent is gone).
+    fn note_console(&self) {
+        #[cfg(windows)]
+        if self.console.get().is_none()
+            && self.alive.load(Ordering::Acquire)
+            && canvas_sys::process::process_start_ms(self.pid) == Some(self.root_started)
+            && let Some(console) = canvas_sys::process::console_of(self.pid)
+        {
+            let _ = self.console.set(console);
+        }
     }
 
     /// The processes still in the terminal's session (Unix: its first
@@ -1139,6 +1169,7 @@ impl Terminal {
     /// Puts an agent's processes started before it was in its job there
     /// (R2-B-03; Windows, while it is young). Answers how many.
     pub fn adopt_strays(&self) -> usize {
+        self.note_console();
         #[cfg(windows)]
         if let Some(job) = lock(&self.job).as_ref() {
             return job.adopt_tree(self.pid, self.root_started);
@@ -2716,13 +2747,23 @@ mod tests {
         let args = ["-NoProfile".to_owned(), "-Command".to_owned(), script.to_owned()];
         let spec = Spawn { id: "agent-leaves", program: "powershell.exe", args: &args, env: &[], cwd: &cwd, cols: 120, rows: 24, copilot: true, engine: Engine::Alacritty };
         let terminal = Terminal::spawn(spec, hooks).expect("spawn powershell.exe");
-        let host = terminal.console_host.map(|(pid, _)| pid);
-        assert!(host.is_some(), "the pseudoconsole's host is known");
-        assert_eq!(canvas_sys::process::console_of(terminal.pid), host, "the agent is attached to its pseudoconsole");
         let pids = printed_pids(&terminal, &["attached", "detached", "own"]);
         let (attached, detached, own) = (pids[0], pids[1], pids[2]);
-        assert_eq!(canvas_sys::process::console_of(attached), host, "Start-Process -NoNewWindow stays in the terminal's console");
-        assert_ne!(canvas_sys::process::console_of(detached), host, "Start-Process gives a console of its own");
+        let console = canvas_sys::process::console_of(terminal.pid);
+        let table = canvas_sys::process::process_entries();
+        let describe = |pid: Option<u32>| table.iter().find(|(p, _, _)| Some(*p) == pid).map(|(p, parent, name)| format!("{name} {p} (parent {parent})"));
+        let facts = format!(
+            "this process {}; the pseudoconsole's host found at its opening: {:?}; the agent's console: {:?}; attached's: {:?}; detached's: {:?}",
+            std::process::id(),
+            describe(terminal.console_host.map(|(pid, _)| pid)),
+            describe(console),
+            describe(canvas_sys::process::console_of(attached)),
+            describe(canvas_sys::process::console_of(detached)),
+        );
+        println!("{facts}");
+        assert!(console.is_some(), "the agent has a console: {facts}");
+        assert_eq!(canvas_sys::process::console_of(attached), console, "Start-Process -NoNewWindow stays in the terminal's console: {facts}");
+        assert_ne!(canvas_sys::process::console_of(detached), console, "Start-Process gives a console of its own: {facts}");
         let picked = terminal.leftovers();
         assert!(picked.iter().any(|&(pid, _, mine)| pid == attached && !mine), "attached {attached}: {picked:?}");
         assert!(picked.iter().any(|&(pid, _, mine)| pid == own && mine), "its own program {own}: {picked:?}");
