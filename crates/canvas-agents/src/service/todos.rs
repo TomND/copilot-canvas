@@ -80,37 +80,43 @@ pub(super) struct Hub {
     /// released ([`flush`], [`Writes::write`]), so a slow disk never holds
     /// up the bus snapshot, a connecting client or a launch (R2-C-02).
     pending: Writes,
+    /// Book texts taken to be written and not written yet, by file: a
+    /// canvas opened again meanwhile is read from here, not from its old
+    /// file (R3-B-03).
+    writing: BTreeMap<PathBuf, String>,
 }
 
-/// Files an applied change leaves to write, in order: the book's text (the
-/// newest only), the Markdown mirror (the newest only) and log lines.
+/// Files applied changes leave to write, in order: each canvas's book text
+/// (the newest per file), each Markdown mirror (the newest per file) and
+/// log lines. Kept per file: changes to two canvases (the routed canvas
+/// switched while a write waited) are both written (R3-B-03).
 #[derive(Default)]
 pub(super) struct Writes {
-    book: Option<(PathBuf, String)>,
-    mirror: Option<(PathBuf, String, u64)>,
+    books: BTreeMap<PathBuf, String>,
+    mirrors: BTreeMap<PathBuf, (String, u64)>,
     log: Vec<(PathBuf, String)>,
 }
 
 impl Writes {
     fn is_empty(&self) -> bool {
-        self.book.is_none() && self.mirror.is_none() && self.log.is_empty()
+        self.books.is_empty() && self.mirrors.is_empty() && self.log.is_empty()
     }
 
-    /// Writes them; answers what could not be written (a book that could
-    /// not be written is handed back to be written with the next change).
-    fn write(self) -> (Vec<String>, Option<(PathBuf, String)>) {
+    /// Writes them; answers what could not be written (books that could
+    /// not be written are handed back to be written with the next change).
+    fn write(self) -> (Vec<String>, Vec<(PathBuf, String)>) {
         let mut errors = Vec::new();
-        let mut unwritten = None;
-        if let Some((path, text)) = self.book
-            && let Err(error) = write_durable(&path, text.as_bytes())
-        {
-            errors.push(format!("cannot save {}: {error}", path.display()));
-            unwritten = Some((path, text));
+        let mut unwritten = Vec::new();
+        for (path, text) in self.books {
+            if let Err(error) = write_durable(&path, text.as_bytes()) {
+                errors.push(format!("cannot save {}: {error}", path.display()));
+                unwritten.push((path, text));
+            }
         }
-        if let Some((path, text, now)) = self.mirror
-            && let Err(error) = write_mirror(&path, &text, now)
-        {
-            errors.push(error);
+        for (path, (text, now)) in self.mirrors {
+            if let Err(error) = write_mirror(&path, &text, now) {
+                errors.push(error);
+            }
         }
         for (path, line) in self.log {
             write_log_line(&path, &line);
@@ -120,18 +126,41 @@ impl Writes {
 }
 
 impl Hub {
-    /// What is left to write (the lock is released before it is written).
+    /// What is left to write (the lock is released before it is written);
+    /// its books stay readable from [`Hub::writing`] until [`Hub::written`].
     fn take_writes(&mut self) -> Writes {
-        std::mem::take(&mut self.pending)
+        let writes = std::mem::take(&mut self.pending);
+        for (path, text) in &writes.books {
+            self.writing.insert(path.clone(), text.clone());
+        }
+        writes
+    }
+
+    /// The books taken were written (or `unwritten` could not be: they
+    /// wait with the next change, unless a newer text of theirs does).
+    fn written(&mut self, taken: &BTreeMap<PathBuf, String>, unwritten: Vec<(PathBuf, String)>) {
+        for (path, text) in taken {
+            if self.writing.get(path) == Some(text) {
+                self.writing.remove(path);
+            }
+        }
+        for (path, text) in unwritten {
+            self.pending.books.entry(path).or_insert(text);
+        }
+    }
+
+    /// The text of `path` not written yet (waiting, or being written), if any.
+    fn unwritten_book(&self, path: &Path) -> Option<&String> {
+        self.pending.books.get(path).or_else(|| self.writing.get(path))
     }
 
     /// Writes now what is left to write (tests and tools that hold the hub alone).
     #[cfg(test)]
     fn write_now(&mut self) -> Vec<String> {
-        let (errors, unwritten) = self.take_writes().write();
-        if let Some(book) = unwritten {
-            self.pending.book.get_or_insert(book);
-        }
+        let writes = self.take_writes();
+        let taken = writes.books.clone();
+        let (errors, unwritten) = writes.write();
+        self.written(&taken, unwritten);
         errors
     }
 }
@@ -145,11 +174,10 @@ pub(super) fn flush(shared: &Shared) -> Vec<String> {
     if writes.is_empty() {
         return Vec::new();
     }
+    let taken = writes.books.clone();
     let (errors, unwritten) = writes.write();
-    if let Some(book) = unwritten {
-        // Tried again with the next change or pass (a newer text replaces it).
-        lock(&shared.todos).pending.book.get_or_insert(book);
-    }
+    // Tried again with the next change or pass (a newer text replaces it).
+    lock(&shared.todos).written(&taken, unwritten);
     errors
 }
 
@@ -166,7 +194,13 @@ impl Hub {
             let _ = self.save(home);
         }
         self.canvas = canvas.to_owned();
-        let read = if crate::doc::valid_canvas_id(canvas) { crate::todos_cli::try_load(home, canvas) } else { Ok(TodoBook::default()) };
+        // A change of this canvas not written yet is what its book is now (R3-B-03).
+        let unwritten = crate::doc::valid_canvas_id(canvas).then(|| self.unwritten_book(&crate::todos_cli::book_path(home, canvas)).cloned()).flatten();
+        let read = match unwritten {
+            Some(text) => serde_json::from_str::<TodoBook>(&text).map_err(|e| e.to_string()),
+            None if crate::doc::valid_canvas_id(canvas) => crate::todos_cli::try_load(home, canvas),
+            None => Ok(TodoBook::default()),
+        };
         (self.book, self.unreadable, self.newer) = match read {
             // A newer version's book is shown but never written (this one would drop what it does not know).
             Ok(book) if book.version > todos::VERSION => {
@@ -195,7 +229,7 @@ impl Hub {
             return Ok(());
         }
         let path = crate::todos_cli::book_path(home, &self.canvas);
-        self.pending.book = Some((path, text.clone()));
+        self.pending.books.insert(path, text.clone());
         self.saved = text;
         Ok(())
     }
@@ -429,7 +463,7 @@ pub(super) fn apply(hub: &mut Hub, home: &Path, routing: &Routing, op: TodoOp, a
         }
         // The mirror's text now; the file is looked at and written once the lock is released.
         if let Some(path) = hub.book.settings.mirror.clone() {
-            hub.pending.mirror = Some((PathBuf::from(path), todos::mirror_markdown(&hub.book), now));
+            hub.pending.mirrors.insert(PathBuf::from(path), (todos::mirror_markdown(&hub.book), now));
         }
         events = applied.events.iter().map(|e| bus_event(&hub.book, routing, actor, e, hop)).collect();
     }
@@ -549,9 +583,13 @@ pub(super) fn action(shared: &Shared, client: &Arc<Client>, value: &serde_json::
     let routing = lock(&shared.routing).clone();
     let live = live_sessions(shared, &routing);
     let (refused, events) = window_op(&mut lock(&shared.todos), &shared.instance.home, &routing, value, Some(live), now_ms());
-    // Written after the lock is released (R2-C-02).
-    for error in flush(shared) {
+    // Written after the lock is released (R2-C-02); the window is told when it could not be (R3-B-03).
+    let errors = flush(shared);
+    for error in &errors {
         log(&shared.instance, &format!("todos: {error}"));
+    }
+    if refused.is_none() && !errors.is_empty() {
+        client.send(ServiceMsg::Error { id: None, message: format!("Todo change not saved yet (tried again with the next change): {}", errors.join("; ")) });
     }
     // Made and sent in turn with the bus loop's: a snapshot made before a newer one is never sent after it.
     match refused {
@@ -999,10 +1037,56 @@ mod tests {
         let writes = hub.take_writes();
         assert!(hub.take_writes().is_empty(), "taken once");
         let (errors, unwritten) = writes.write();
-        assert!(errors.is_empty() && unwritten.is_none(), "{errors:?}");
+        assert!(errors.is_empty() && unwritten.is_empty(), "{errors:?}");
         assert_eq!(crate::todos_cli::load(&home, "c1").boards.len(), 2, "the newest book");
         let lines: Vec<String> = log_lines(&home).iter().map(|l| l["message"].as_str().unwrap_or_default().to_owned()).collect();
         assert!(lines.len() == 2 && lines[0].contains("Decomps") && lines[1].contains("Second"), "{lines:?}");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// Canvas c2, with the same session.
+    fn routing2() -> Routing {
+        Routing { canvas: "c2".into(), ..routing() }
+    }
+
+    /// R3-B-03: changes to two canvases while a write waits are both
+    /// written; a canvas opened again before its write is read from the
+    /// change, not from its old file; a failed write waits for the next.
+    #[test]
+    fn changes_to_two_canvases_while_a_write_waits_are_both_kept() {
+        let (home, mut hub) = (temp_home(), Hub::default());
+        let run = || Run { now: NOW, hop: 0, live: None };
+        let board = |name: &str| TodoOp::AddBoard { name: name.into(), prefix: None, parent: None, groups: vec![], x: None, y: None };
+        assert!(apply(&mut hub, &home, &routing(), board("On c1"), &Actor::human(), run()).result.is_ok());
+        // The routed canvas switches to c2 before c1's change is written; c2 changes too.
+        assert!(apply(&mut hub, &home, &routing2(), board("On c2"), &Actor::human(), run()).result.is_ok());
+        // And back to c1 before anything was written: its change is what it holds.
+        hub.open(&home, "c1");
+        assert!(hub.book.boards.iter().any(|b| b.name == "On c1"), "c1's own change, not its old file");
+        hub.open(&home, "c2");
+        assert!(hub.book.boards.iter().any(|b| b.name == "On c2"));
+        // Taken to be written (a slow disk): opening c1 meanwhile still reads the change.
+        let writes = hub.take_writes();
+        hub.open(&home, "c1");
+        assert!(hub.book.boards.iter().any(|b| b.name == "On c1"), "read from the write under way");
+        let taken = writes.books.clone();
+        let (errors, unwritten) = writes.write();
+        assert!(errors.is_empty(), "{errors:?}");
+        hub.written(&taken, unwritten);
+        assert!(hub.writing.is_empty());
+        assert_eq!(crate::todos_cli::load(&home, "c1").boards.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), ["On c1"]);
+        assert_eq!(crate::todos_cli::load(&home, "c2").boards.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), ["On c2"]);
+        // A write that fails waits for the next one, also when another canvas changes meanwhile.
+        let c1 = crate::todos_cli::book_path(&home, "c1");
+        std::fs::remove_file(&c1).unwrap();
+        std::fs::create_dir_all(&c1).unwrap();
+        assert!(apply(&mut hub, &home, &routing(), board("Second on c1"), &Actor::human(), run()).result.is_ok());
+        assert!(!hub.write_now().is_empty(), "c1's book cannot be written (a folder is in the way)");
+        assert!(apply(&mut hub, &home, &routing2(), board("Second on c2"), &Actor::human(), run()).result.is_ok());
+        std::fs::remove_dir(&c1).unwrap();
+        assert!(hub.write_now().is_empty());
+        assert_eq!(crate::todos_cli::load(&home, "c1").boards.len(), 2, "c1's failed change was written with c2's");
+        assert_eq!(crate::todos_cli::load(&home, "c2").boards.len(), 2);
         let _ = std::fs::remove_dir_all(home);
     }
 

@@ -1075,6 +1075,10 @@ impl HostApp for Agents {
     }
 
     fn shutdown(&self) {
+        // A todo change still waiting to be written (a retry) is not lost at exit (R3-B-03).
+        for error in todos::flush(self) {
+            log(&self.instance, &format!("todos at exit: {error}"));
+        }
         self.restore.shutdown(now_ms());
         self.restore.save_now();
         for saved in self.docs.save(true) {
