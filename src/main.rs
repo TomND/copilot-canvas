@@ -521,6 +521,8 @@ fn migrate_home(yes: bool) -> Result<()> {
                 instance.name
             );
             println!("Stopping the terminal service of {} (instance {}, {alive} live session(s))…", old.display(), instance.name);
+            // Moved, then started again: not a stop on purpose (R3-B-01).
+            conn.tx.send(protocol::ClientMsg::Bus { json: canvas_common::stopped::RESTART_ACTION.into() })?;
             conn.tx.send(protocol::ClientMsg::Shutdown)?;
             drop(conn);
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
@@ -593,6 +595,13 @@ fn real_main() -> Result<()> {
             None => paste_probe::run(flag("plain"), flag("kitty"), flag("keys"), flag("raw")),
         };
     }
+    // Self-tests and benches run their services with restore off: a service a
+    // lingering test client starts again resumes nothing, so it never stays up
+    // for hours (R3-B-01). Their clients and services inherit it.
+    if matches!(args.command.first().map(String::as_str), Some("selftest" | "bench")) && canvas_common::env::var_os("ATELIER_RESTORE").is_none() {
+        // SAFETY: set before any thread of this process starts.
+        unsafe { std::env::set_var("ATELIER_RESTORE", "off") };
+    }
     let instance = paths::Instance::new(args.instance.clone(), args.home.clone(), args.sessions_dir.clone())?;
     let option = |name: &str| args.rest.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
     let options = |name: &str| args.rest.iter().filter(|(k, _)| k == name).map(|(_, v)| v.clone()).collect::<Vec<_>>();
@@ -657,7 +666,8 @@ fn real_main() -> Result<()> {
             let conn = client::conn::connect(&instance, false).context("no service is running")?;
             conn.tx.send(protocol::ClientMsg::Shutdown)?;
             std::thread::sleep(std::time::Duration::from_millis(300));
-            println!("Stop requested; Copilot sessions get a few seconds to exit gracefully.");
+            // The service records the stop as one on purpose: open windows do not start it again on their own.
+            println!("Stop requested; Copilot sessions get a few seconds to exit gracefully. Open windows will not start the service again on their own; `atelier service start` (or a window's Start) does, and resumes what it ran.");
             Ok(())
         }
         ["service", "status"] => service_install::status(&instance),

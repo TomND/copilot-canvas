@@ -126,6 +126,8 @@ pub fn restart(instance: &Instance, yes: bool) -> Result<()> {
                     stats.alive
                 );
             }
+            // A restart, not a stop on purpose: open windows may start it again (R3-B-01).
+            conn.tx.send(crate::protocol::ClientMsg::Bus { json: canvas_common::stopped::RESTART_ACTION.into() })?;
             conn.tx.send(crate::protocol::ClientMsg::Shutdown)?;
             drop(conn);
             println!("Stopping the service (pid {}); sessions get up to {} s to exit gracefully…", stats.pid, canvas_host::term::STOP_GRACE.as_secs());

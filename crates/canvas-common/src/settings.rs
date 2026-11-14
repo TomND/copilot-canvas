@@ -144,9 +144,15 @@ impl Settings {
         }
     }
 
-    /// Whether the service restores what it ran after a restart (default on).
+    /// Whether the service restores what it ran after a restart (default
+    /// on): `ATELIER_RESTORE` (`off`, `on`; the self-tests set `off`), else
+    /// `restore`.
     pub fn restore(&self) -> bool {
-        self.restore.unwrap_or(true)
+        match crate::env::var("ATELIER_RESTORE").ok().map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            Some("off" | "0" | "false" | "no") => false,
+            Some("on" | "1" | "true" | "yes") => true,
+            _ => self.restore.unwrap_or(true),
+        }
     }
 
     /// Address the service listens on for remote clients:

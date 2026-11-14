@@ -95,10 +95,8 @@ impl Sandbox {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        if let Ok(conn) = crate::client::conn::try_connect(&self.instance) {
-            let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while Instant::now() < deadline && conn.rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
+        if let Err(error) = crate::selftest::stop_test_service(&self.instance) {
+            eprintln!("warning: {error:#}");
         }
         for _ in 0..10 {
             if std::fs::remove_dir_all(&self.root).is_ok() {

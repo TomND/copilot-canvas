@@ -328,9 +328,8 @@ fn wait_alive(conn: &crate::client::conn::Conn, ids: &[String]) -> Result<()> {
 }
 
 fn stop_service(instance: &Instance) {
-    if let Ok(conn) = conn::try_connect(instance) {
-        let _ = conn.tx.send(ClientMsg::Shutdown);
-        std::thread::sleep(Duration::from_secs(3));
+    if let Err(error) = crate::selftest::stop_test_service(instance) {
+        eprintln!("warning: {error:#}");
     }
 }
 

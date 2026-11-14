@@ -22,6 +22,7 @@ pub mod remote;
 pub mod sat;
 pub mod settings;
 pub mod sizing;
+pub mod stopped;
 pub mod tcp;
 #[cfg(windows)]
 pub mod win;

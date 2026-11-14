@@ -519,9 +519,8 @@ pub fn run(options: Options) -> Result<()> {
     std::fs::create_dir_all(root.join("work"))?;
     let instance = Instance::new(Some(format!("soak{}", std::process::id())), Some(root.join("home")), Some(root.join("sessions")))?;
     let result = soak(&exe, &instance, &root, &options);
-    if let Ok(conn) = conn::try_connect(&instance) {
-        let _ = conn.tx.send(ClientMsg::Shutdown);
-        std::thread::sleep(Duration::from_secs(3));
+    if let Err(error) = crate::selftest::stop_test_service(&instance) {
+        eprintln!("warning: {error:#}");
     }
     match &result {
         Ok(report) => {

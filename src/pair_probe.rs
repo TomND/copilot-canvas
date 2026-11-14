@@ -19,7 +19,6 @@ use anyhow::{Context, Result, bail};
 
 use crate::client::conn::{self, AuthError, ClientSession, ConnOptions, ConnTarget, Refused};
 use crate::paths::Instance;
-use crate::protocol::ClientMsg;
 use crate::selftest::Console;
 use crate::standin;
 
@@ -36,10 +35,7 @@ pub fn run(exe: &Path) -> Result<()> {
     std::fs::create_dir_all(root.join("work"))?;
     let cloud = Instance::new(Some(format!("paired{}", std::process::id())), Some(root.join("cloud")), Some(root.join("sessions")))?;
     let result = scenario(exe, &cloud, &root);
-    if let Ok(conn) = conn::try_connect(&cloud) {
-        let _ = conn.tx.send(ClientMsg::Shutdown);
-        std::thread::sleep(Duration::from_millis(2000));
-    }
+    let result = result.and(crate::selftest::stop_test_service(&cloud));
     match &result {
         Ok(()) => {
             for _ in 0..10 {

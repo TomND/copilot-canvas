@@ -787,6 +787,29 @@ error naming the terminal, a key held behind it is not acknowledged (so it is
 sent again after a reconnection), the work held behind a launch is let go and
 the launch thread is given back, so the terminal's later messages and the
 connection's end are never held.
+**Stopped on purpose** (R3-B-01, R3-C-03; `canvas_common::stopped`). A local
+client's `ClientMsg::Shutdown` writes `<home>/run/stopped-<instance>.json`
+(`{"pid", "stopped_ms", "by", "build"}`: the service's pid, when, the client's
+name, id and pid, the service's build; written whole through a temporary
+file) before any terminal stops, unless that client sent
+`ClientMsg::Bus { json: stopped::RESTART_ACTION }`
+(`{"action":"service","op":"restarting"}`, handled on the reader, so it is
+known before the `Shutdown` that follows on the same connection) in the last
+60 s: `service restart`, `atelier migrate` (and a client's *Update service*)
+send it. A crash, a killed process, a reboot or the idle exit write nothing.
+The service removes the record as it starts, whoever starts it (logged with
+who had stopped it). While the record exists a local client does not start
+the service on its own (a reconnect after its connection ended): it says the
+service was stopped, offers Start (removes the record and starts it), and
+keeps connecting without starting it, so it is back when something else
+starts the service. The running set is kept whatever ended the service: the
+next start resumes it. An older service ignores the restart action and
+writes no record; older clients ignore the record. Self-tests run their
+services with `ATELIER_RESTORE=off` (`Settings::restore`; set by `atelier
+selftest` and `bench` for everything they start) and stop them with
+`selftest::stop_test_service`, which waits until the service is gone and
+watches it for 3 s, stopping again one a lingering test client started.
+
 `service restart [--yes]` stops the service gracefully, waits for its process
 to end and starts it through its login entry (Windows: the `Atelier-Service`
 task; macOS: `launchctl kickstart` of its LaunchAgent; Linux: `systemctl --user

@@ -1610,6 +1610,42 @@ pub(crate) fn copy_paste_check<U: Ui>(ui: &mut U) -> Result<String> {
     Ok(format!("copied {} lines exactly; {shell} ran no pasted line; the program got one bracketed paste of 4 lines and no Enter", expected.lines().count()))
 }
 
+/// Stops a test instance's service and makes sure it stays stopped
+/// (R3-B-01): waits until it is gone (20 s at most), then watches it for
+/// 3 s; one a lingering test client started again meanwhile is stopped too
+/// (three times at most, each said). Fails only when it cannot be kept down.
+pub(crate) fn stop_test_service(instance: &Instance) -> Result<()> {
+    for round in 0..4 {
+        if let Ok(conn) = crate::client::conn::try_connect(instance) {
+            if round > 0 {
+                eprintln!("warning: something started the test service of {} again after its stop; stopping it again", instance.name);
+            }
+            let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
+            let deadline = Instant::now() + Duration::from_secs(20);
+            // The connection stays open until the service closes it, so the request is sent.
+            while Instant::now() < deadline && conn.rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
+            drop(conn);
+            while Instant::now() < deadline && crate::client::conn::service_answers(instance) {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            anyhow::ensure!(!crate::client::conn::service_answers(instance), "the test service of {} did not stop within 20 s", instance.name);
+        }
+        let watch = Instant::now() + Duration::from_secs(3);
+        let mut back = false;
+        while Instant::now() < watch {
+            if crate::client::conn::service_answers(instance) {
+                back = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        if !back {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("the test service of {} keeps being started again after its stop", instance.name)
+}
+
 /// The front end the self-test drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Client {
@@ -1638,11 +1674,9 @@ pub fn run(remote: Option<&str>, client: Client) -> Result<()> {
             scenario(&instance, &work, remote, "gui", |args, env| GuiDriver::start(args, env, (170, 46), &log))
         }
     };
-    // Always stop the isolated test service and its shells.
-    if let Ok(conn) = crate::client::conn::try_connect(&instance) {
-        let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
-        std::thread::sleep(Duration::from_millis(2500));
-    }
+    // Always stop the isolated test service and its shells, and make sure it stays stopped.
+    let stopped = stop_test_service(&instance);
+    let result = result.and(stopped);
     if let Some(text) = saved_clipboard {
         let _ = crate::client::clipboard::set_text(&text);
     }
@@ -2305,11 +2339,8 @@ fn legacy_service_steps<U: Ui>(instance: &Instance, work: &Path, env: &[(&str, &
         anyhow::ensure!(code == 0, "client exited with {code}");
         Ok(())
     })();
-    if let Ok(conn) = conn::try_connect(&legacy) {
-        let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
-        std::thread::sleep(Duration::from_millis(1500));
-    }
-    result
+    let stopped = stop_test_service(&legacy);
+    result.and(stopped)
 }
 
 /// The box that owns the self-test's pull request (never started).

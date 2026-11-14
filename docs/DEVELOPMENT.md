@@ -316,8 +316,10 @@ OpenCode; docs/AGENT-PROVIDERS.md).
    lines there.
 5. Delivery: the service writes the plugin when it starts. A running service
    of the previous build keeps serving the old texts until it restarts on
-   the new build (`atelier service stop`, then open the canvas again,
-   or the toolbar's *Update service*); sessions get the plugin at launch.
+   the new build (`atelier service restart`, or `atelier service stop`
+   and then open the canvas again: a window left open does not start a
+   service stopped on purpose by itself; or the toolbar's *Update
+   service*); sessions get the plugin at launch.
 
 ### Restore after a restart
 

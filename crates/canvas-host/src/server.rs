@@ -233,6 +233,8 @@ pub struct Client {
     pub remote_id: Option<String>,
     /// The process at the other end of a pipe connection.
     pub peer_pid: Option<u32>,
+    /// What it calls itself (`ClientInfo::name`).
+    pub name: String,
     /// Connected through a WebSocket (Dev Tunnels web forwarding: the iPhone).
     pub websocket: bool,
     /// It carries backend requests only (`CAP_REQUESTS_ONLY`: a client's
@@ -273,6 +275,7 @@ impl Client {
             remote,
             remote_id: None,
             peer_pid: None,
+            name: String::new(),
             websocket: false,
             requests_only: false,
             caps,
@@ -408,6 +411,9 @@ pub struct Host {
     last_activity: Mutex<Instant>,
     started: Instant,
     pub shutting_down: AtomicBool,
+    /// When a local client last said it restarts the service
+    /// (`stopped::RESTART_ACTION`; ms, 0: never): its `Shutdown` is no stop on purpose.
+    restart_announced: AtomicU64,
     /// Terminal engine for new terminals (`ATELIER_ENGINE`).
     pub engine: Engine,
     fallback_logged: AtomicBool,
@@ -674,6 +680,10 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     let _ = std::fs::remove_file(instance.listen_error_path());
     let settings = canvas_common::settings::Settings::load(&instance.home);
     log(&instance, &format!("service started, build {}", build_id()));
+    // Started again: no longer stopped on purpose (clients start it on their own again).
+    if let Some(stopped) = canvas_common::stopped::clear(&instance) {
+        log(&instance, &format!("it had been stopped on purpose at {} (by {}); that record is cleared", stopped.stopped_ms, if stopped.by.is_empty() { "a client" } else { &stopped.by }));
+    }
 
     let (pump_tx, pump_rx) = bounded::<()>(1);
     let (exited_tx, exited_rx) = unbounded::<String>();
@@ -708,6 +718,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         last_activity: Mutex::new(Instant::now()),
         started: Instant::now(),
         shutting_down: AtomicBool::new(false),
+        restart_announced: AtomicU64::new(0),
         engine: configured_engine(&instance),
         fallback_logged: AtomicBool::new(false),
         compress: settings.compress(),
@@ -1191,6 +1202,25 @@ impl Host {
         std::process::exit(0);
     }
 
+    /// A local client asked the service to stop: unless it said it restarts
+    /// the service, the stop is recorded as one on purpose, before any
+    /// terminal stops (`canvas_common::stopped`: a window's reconnect then
+    /// never starts the service again on its own, R3-B-01).
+    fn record_stop(&self, client: &Client) {
+        let announced = self.restart_announced.load(Ordering::Acquire);
+        if announced != 0 && now_ms().saturating_sub(announced) < RESTART_ANNOUNCED_FOR_MS {
+            log(&self.instance, &format!("client {} restarts the service", client.id));
+            let _ = canvas_common::stopped::clear(&self.instance);
+            return;
+        }
+        let by = format!("{} (client {}{})", if client.name.is_empty() { "a client" } else { &client.name }, client.id, client.peer_pid.map(|pid| format!(", pid {pid}")).unwrap_or_default());
+        let stopped = canvas_common::stopped::Stopped { pid: std::process::id(), stopped_ms: now_ms(), by: by.clone(), build: build_id().to_owned() };
+        match canvas_common::stopped::write(&self.instance, &stopped) {
+            Ok(()) => log(&self.instance, &format!("stopped on purpose by {by}: recorded (clients do not start it again on their own)")),
+            Err(error) => log(&self.instance, &format!("stopped on purpose by {by}; cannot record it: {error}")),
+        }
+    }
+
     /// The token, port and listen-error files are only valid while this process runs.
     fn remove_published_files(&self) {
         let _ = std::fs::remove_file(health_path(&self.instance));
@@ -1493,6 +1523,7 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     let mut client = Client::new(id, accepted.protocol, remote, info.caps, outbox.clone(), closer.clone());
     client.remote_id = info.remote_id.clone();
     client.peer_pid = peer_pid;
+    client.name = info.name.clone();
     client.websocket = websocket;
     client.requests_only = requests_only;
     // The newest connection of a client session owns its input; the previous
@@ -1646,6 +1677,8 @@ impl Work {
 
 /// Launches one client connection runs at once (each on a thread of its own).
 const MAX_LAUNCHES: usize = 4;
+/// A client's restart announcement covers a `Shutdown` this soon after it (ms).
+const RESTART_ANNOUNCED_FOR_MS: u64 = 60_000;
 /// Work for a terminal another launch is starting (another connection's, the
 /// restore's) waits for that launch at most this long.
 const LAUNCH_AWAIT: Duration = Duration::from_secs(20);
@@ -2002,6 +2035,15 @@ fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameRead
                 continue;
             }
             let _busy = client.liveness.as_ref().map(|l| l.busy());
+            // A local client restarts the service: noted before its `Shutdown`, which follows on this connection.
+            if let ClientMsg::Bus { json } = &message
+                && canvas_common::stopped::is_restart_action(json)
+            {
+                if client.remote_id.is_none() {
+                    host.restart_announced.store(now_ms(), Ordering::Release);
+                }
+                continue;
+            }
             // Work waits for it, another launch of it is starting (R2-A-07),
             // or the replaced connection is still being drained (R3-A-10).
             let queued = message_terminal(&message).is_some_and(|id| pending.draining.load(Ordering::Acquire) || lock(&pending.waiting).contains_key(id) || host.is_launching(id));
@@ -2520,6 +2562,7 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
         // ends the service and every session on it.
         ClientMsg::Shutdown if client.remote_id.is_some() => bail!("remote clients cannot shut the service down"),
         ClientMsg::Shutdown => {
+            host.record_stop(client);
             let host = host.clone();
             spawn_named("shutdown", move || host.shutdown());
         }
@@ -4263,6 +4306,45 @@ mod tests {
         closer.close();
         eventually(Duration::from_secs(1), "the connection's threads are done", || lock(&host.serving).is_empty());
         let _ = host.terminal("fine").map(|t| t.stop(true));
+    }
+
+    /// R3-B-01: a client's stop is recorded as one on purpose, unless that
+    /// client said it restarts the service; a service that starts clears the record.
+    #[test]
+    fn a_stop_on_purpose_is_recorded_and_a_start_clears_it() {
+        let home = std::env::temp_dir().join(format!("cc-stopped-svc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("settings.json"), r#"{"remote":{"listen":"127.0.0.1:0"}}"#).unwrap();
+        let instance = Instance::new(Some("stopped-svc".into()), Some(home.clone()), Some(home.clone())).unwrap();
+        canvas_common::stopped::write(&instance, &canvas_common::stopped::Stopped { pid: 1, stopped_ms: 5, ..Default::default() }).unwrap();
+        let (host_tx, host_rx) = bounded::<Arc<Host>>(1);
+        let service = instance.clone();
+        std::thread::spawn(move || {
+            run(service, move |host| {
+                let _ = host_tx.send(host.clone());
+                Arc::new(SlowApp { resolve: Duration::ZERO, connect: Duration::ZERO })
+            })
+        });
+        let host = host_rx.recv().unwrap();
+        eventually(Duration::from_secs(10), "the service listens", || std::fs::read_to_string(instance.port_path()).is_ok_and(|p| p.trim().parse::<u16>().is_ok()));
+        let addr = SocketAddr::from(([127, 0, 0, 1], std::fs::read_to_string(instance.port_path()).unwrap().trim().parse::<u16>().unwrap()));
+        assert_eq!(canvas_common::stopped::read(&instance), None, "a service that starts is no longer stopped");
+        assert!(std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains("had been stopped on purpose"));
+        let mut window = Client::new(77, 8, false, protocol::CAP_FRAME8, Arc::new(Outbox::new()), Closer::new(|| {}));
+        window.name = "atelier-gui".into();
+        window.peer_pid = Some(4242);
+        host.record_stop(&window);
+        let stopped = canvas_common::stopped::read(&instance).expect("recorded");
+        assert_eq!(stopped.pid, std::process::id());
+        assert!(stopped.by.contains("atelier-gui") && stopped.by.contains("4242"), "{stopped:?}");
+        // A restart says so first (on its connection, before its Shutdown): nothing is recorded.
+        let (_rx, mut writer, closer) = test_client(&instance, addr, "restarter");
+        writer.send(&ClientMsg::Bus { json: canvas_common::stopped::RESTART_ACTION.into() }).unwrap();
+        eventually(Duration::from_secs(5), "the restart is noted", || host.restart_announced.load(Ordering::Acquire) != 0);
+        host.record_stop(&window);
+        assert_eq!(canvas_common::stopped::read(&instance), None, "a restart is no stop on purpose");
+        closer.close();
     }
 
     #[test]

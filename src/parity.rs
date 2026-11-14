@@ -839,18 +839,12 @@ impl Sandbox {
     }
 }
 
-/// Stops an instance's service and waits (up to 15 s) until it is gone: a
-/// service left running would hold the console's output open until its idle
-/// exit 10 minutes later.
+/// Stops an instance's service, waits until it is gone and makes sure it
+/// stays stopped (`selftest::stop_test_service`): a service left running
+/// would hold the console's output open until its idle exit 10 minutes later.
 pub(crate) fn stop_service(instance: &Instance) {
-    let Ok(conn) = crate::client::conn::try_connect(instance) else { return };
-    let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
-    let deadline = Instant::now() + Duration::from_secs(15);
-    // The connection stays open until the service closes it, so the request is sent.
-    while Instant::now() < deadline && conn.rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
-    drop(conn);
-    while Instant::now() < deadline && crate::client::conn::try_connect(instance).is_ok() {
-        std::thread::sleep(Duration::from_millis(200));
+    if let Err(error) = crate::selftest::stop_test_service(instance) {
+        eprintln!("warning: {error:#}");
     }
 }
 

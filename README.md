@@ -317,7 +317,17 @@ and run `atelier service restart` there).
 
 When the service starts again after a restart (`atelier service stop` and a
 new start, the logon task, a crash, a killed process, a reboot), it resumes
-what it was running, with no window needed:
+what it was running, with no window needed.
+
+A stop on purpose stays a stop: `atelier service stop` (any local client's
+*Shutdown*) records it in `~/.atelier/run/stopped-<instance>.json` before
+the service stops its terminals, and a window left open then says the service
+was stopped (with a Start action) instead of starting it again on its own a
+second later. Opening a window, its Start, `atelier service start`, the logon
+task or `service restart` start it as before, and the service removes the
+record as it starts; what it ran is resumed then. `service restart`,
+`atelier migrate` and *Update service* are restarts, not stops: they are not
+recorded, and a crash or reboot never is.
 
 - **Recorded**: every terminal it runs, with its launch (agent and session
   id, or the command), folder, size, when it started and what it was doing

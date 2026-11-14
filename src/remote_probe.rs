@@ -536,10 +536,7 @@ pub fn faults(exe: &Path) -> Result<()> {
     std::fs::create_dir_all(root.join("sessions"))?;
     let instance = Instance::new(Some(format!("faults{}", std::process::id())), Some(root.join("home")), Some(root.join("sessions")))?;
     let result = scenario(exe, &instance, &root);
-    if let Ok(conn) = conn::try_connect(&instance) {
-        let _ = conn.tx.send(ClientMsg::Shutdown);
-        std::thread::sleep(Duration::from_millis(1500));
-    }
+    let result = result.and(crate::selftest::stop_test_service(&instance));
     match &result {
         Ok(()) => {
             for _ in 0..10 {
@@ -1290,6 +1287,8 @@ mod tests {
         ui.send(b"\r").unwrap();
         ui.wait("prompt", Duration::from_secs(20), |t| t.contains("PS ")).unwrap();
         let old = crate::client::conn::try_connect(&instance).unwrap();
+        // A restart (not a stop on purpose, which a window never undoes on its own: R3-B-01).
+        old.tx.send(crate::protocol::ClientMsg::Bus { json: canvas_common::stopped::RESTART_ACTION.into() }).unwrap();
         old.tx.send(crate::protocol::ClientMsg::Shutdown).unwrap();
         ui.wait("offline banner", Duration::from_secs(10), |t| t.contains("Offline — reconnecting")).unwrap();
         ui.wait("reconnected to a new service", Duration::from_secs(20), |t| t.contains("Reconnected")).unwrap();
@@ -1301,10 +1300,7 @@ mod tests {
         ui.wait("quit dialog", Duration::from_secs(5), |t| t.contains("Detach (keep running)")).unwrap();
         ui.send(b"\x1b[C\r").unwrap();
         let _ = ui.wait_exit(Duration::from_secs(10));
-        if let Ok(conn) = crate::client::conn::try_connect(&instance) {
-            let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
-            std::thread::sleep(Duration::from_secs(2));
-        }
+        crate::selftest::stop_test_service(&instance).unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
 }
