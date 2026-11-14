@@ -185,20 +185,33 @@ acknowledgements answers right after `Ready8` with `ServiceMsg::Caps { bits }`
 the wire, every 16 KiB or 25 ms while reading). The service then lets other
 tiles' frames and bulk go only while fewer bytes than its budget are
 unacknowledged: the rate acknowledged during a busy spell times the round
-trip plus 150 ms, within 32–256 KiB; control and the focused frame may have
-128 KiB more in flight, and one message always goes when nothing is in
-flight. On a slow relay an echo waits about 150 ms behind bulk, on a fast
-one bulk still fills the link. An older service never sends `Caps` (it
-ignores the bit), so the client never sends `Received`; an older client never
-sets the bit and never gets `Caps`. Remote clients that do not acknowledge
-(older builds, the phone) get a stopgap instead: while they typed in the last
-2 s, other tiles' frames and bulk leave at most 128 KB/s and other tiles get
-4 frames/s, so the tunnel drains ahead of their echoes. `selftest --remote
-faults` runs its proxy as such a tunnel (1 MiB in flight, in arrival order)
-and measures the echo while 32 replies of 256 KB stream at 1 MB/s: under 1 s
-with acknowledgements (about 250 ms), and for a client without them once it
-typed. One message is never split: a reply of many megabytes still holds the
-echo behind it for its own transfer time.
+trip plus 150 ms, within 32–768 KiB (under the tunnel's 1 MiB with what
+follows; R3-A-05); control may have 128 KiB more in flight, and so may the
+focused tile's frame once its previous frame was acknowledged, so a tile
+that prints fast has one frame at most beyond the budget and its echo never
+queues behind its own output (R3-C-01); one message always goes when nothing
+is in flight. Replies larger than 4 KiB wait behind the focused frame, and a
+reply or bulk message that waited 250 ms takes the focused frame's turn once
+per 250 ms, so a tile printing without pause neither delays echoes behind a
+burst of replies nor starves bulk (R3-A-02). An acknowledgement that
+overtakes the writer's own count is kept (R3-A-04), and the acknowledgements
+an upload held back on the client's side do not lower the budget (R3-A-06).
+On a slow relay an echo waits about 150 ms behind bulk. An older service
+never sends `Caps` (it ignores the bit), so the client never sends
+`Received`; an older client never sets the bit and never gets `Caps`. Remote
+clients that do not acknowledge (older builds, the phone) get a stopgap
+instead: while they typed in the last 2 s, bulk leaves at most 128 KB/s
+(one large message is owed for 1 s at most) and other tiles get 4 frames/s
+from the pump, never frozen by a transfer (R3-A-09), so the tunnel drains
+ahead of their echoes. `selftest --remote faults` runs its proxy as such a
+tunnel (1 MiB in flight, in arrival order) and measures the echo while 32
+replies of 256 KB stream at 1 MB/s: under 1 s with acknowledgements (about
+250 ms), and for a client without them once it typed. One message is never
+split (a document, a reply or an image is one message in the protocol; a
+frame too large for one message is the exception), so while the client
+types (the last 2 s) a bulk message larger than its budget waits, at most
+2 s, and one such message goes per 2 s: a reply of many megabytes holds the
+echo behind it for its own transfer time at most once in that while.
 
 ### Liveness
 

@@ -41,7 +41,7 @@ use anyhow::{Context, Result, bail};
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded, unbounded};
 
 use crate::emulator::{Engine, Snapshot, SnapshotImage};
-use crate::outbox::{Next, Outbox, Push, Taken};
+use crate::outbox::{Lane, Next, Outbox, Push, Taken};
 pub use crate::outbox::Outgoing;
 use crate::paths::{Instance, build_id, now_ms};
 use canvas_sys::ipc::{Pipe, PipeServer};
@@ -1945,11 +1945,16 @@ fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameRead
     let mut undecodable = 0u64;
     let mut refused = 0u64;
     let result = (|| -> Result<()> {
+        let mut read = reader.bytes_in();
         while let Some(frame) = reader.recv_lenient::<ClientMsg>()? {
             // A client the service dropped is not served further.
             if client.is_dropped() {
                 break;
             }
+            // A large message (an upload) held the client's acknowledgements back (R3-A-06).
+            let total = reader.bytes_in();
+            client.outbox.read(total.saturating_sub(read));
+            read = total;
             if let Some(liveness) = &client.liveness {
                 liveness.received();
             }
@@ -2116,7 +2121,7 @@ fn spawn_writer(host: Weak<Host>, mut writer: FrameWriter, outbox: Arc<Outbox>, 
             let sent = match outbox.next(deadline) {
                 Next::Closed => break,
                 Next::Timeout => Ok(0),
-                Next::Item(Taken { message, frame_of, urgent }) => {
+                Next::Item(Taken { message, frame_of, lane }) => {
                     // Flow control counts from the byte after `Caps` (the client does too).
                     let caps = matches!(&message, Outgoing::Message(ServiceMsg::Caps { .. }));
                     let sent = match message {
@@ -2141,7 +2146,7 @@ fn spawn_writer(host: Weak<Host>, mut writer: FrameWriter, outbox: Arc<Outbox>, 
                     };
                     match &sent {
                         Ok(_) if caps => outbox.start_window(),
-                        Ok(bytes) => outbox.wrote(*bytes, urgent),
+                        Ok(bytes) => outbox.wrote(*bytes, lane),
                         Err(_) => {}
                     }
                     if let Some(tile) = frame_of {
@@ -2174,7 +2179,7 @@ fn spawn_writer(host: Weak<Host>, mut writer: FrameWriter, outbox: Arc<Outbox>, 
             if beat.as_mut().is_some_and(|b| b.due(Instant::now())) {
                 let input_ack = session.as_ref().map(|s| lock(s).applied).unwrap_or(0);
                 match writer.send(&ServiceMsg::Heartbeat { input_ack }) {
-                    Ok(bytes) => outbox.wrote(bytes, true),
+                    Ok(bytes) => outbox.wrote(bytes, Lane::Control),
                     Err(error) => {
                         failure = Some(error);
                         break;

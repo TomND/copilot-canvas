@@ -203,6 +203,11 @@ impl FrameReader {
         self.inner = Box::new(Heard { inner, liveness });
     }
 
+    /// Bytes of whole frames read so far (their headers included).
+    pub fn bytes_in(&self) -> u64 {
+        self.stats.bytes_in.load(Ordering::Relaxed)
+    }
+
     pub fn accept_compressed(&mut self) -> io::Result<()> {
         if self.zstd.is_none() {
             let mut decoder = zstd::stream::write::Decoder::new(Bounded::default())?;

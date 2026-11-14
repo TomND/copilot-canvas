@@ -1,10 +1,11 @@
 //! What one client is sent, waiting for its writer thread
 //! (`server::spawn_writer`). Not one FIFO: a keystroke's echo must not wait
 //! behind a backlog of frames, replies or snapshots. The writer takes from
-//! four lanes, in this order:
+//! five lanes, in this order:
 //!
-//! 1. **Control**, in order: `Ready8`, errors, small replies, notices, and the
-//!    terminal and session state. State is coalesced, never dropped: a
+//! 1. **Control**, in order: `Ready8`, errors, small replies (up to
+//!    [`REPLY_SMALL`]), notices, and the terminal and session state. State is
+//!    coalesced, never dropped: a
 //!    `Terminals` update joins the one already waiting (the newest info per
 //!    terminal; a stale info of an earlier run of it never replaces a newer
 //!    one; `TerminalGone` replaces it), `Sessions` upserts and removals merge
@@ -13,14 +14,24 @@
 //!    first part, so the lane's order holds (the terminal list a client gets
 //!    on connect comes before the answer to its first `Stats`).
 //! 2. **The focused tile's frame** (`Subscribe8::focused`).
-//! 3. **Other tiles' frames**, oldest first. At most one frame per tile waits:
+//! 3. **Replies** larger than [`REPLY_SMALL`] and up to [`SMALL`], in order:
+//!    they never go ahead of the echo (R3-A-02).
+//! 4. **Other tiles' frames**, oldest first. At most one frame per tile waits:
 //!    the pump makes the next one once the writer wrote it, from the screen
 //!    then, so a slow link gets fewer, newer frames instead of a queue.
-//! 4. **Bulk**, in order: documents and their patches, bus snapshots (a newer
+//! 5. **Bulk**, in order: documents and their patches, bus snapshots (a newer
 //!    one replaces one still waiting), the reports inbox, large replies,
 //!    images and their placements, a whole session list larger than
 //!    [`SMALL`]. Bulk that has waited [`BULK_WAIT`] goes before other tiles'
 //!    frames, so frames never starve it.
+//!
+//! A reply or bulk message that has waited [`BULK_WAIT`] also takes the
+//! focused frame's turn once per [`BULK_WAIT`], so a tile that prints
+//! without pause cannot starve them (R3-A-02). While the client types (in
+//! the last [`TYPING_SPAN`]), a bulk message larger than what flow control
+//! lets be in flight waits (at most [`BULK_HOLD`], one such message per
+//! [`BULK_HOLD`]): once written it would hold every echo until it is
+//! through, and it cannot be split (R3-C-01).
 //!
 //! Lanes are bounded in messages and bytes (frames by the one-per-tile rule).
 //! A client whose control or bulk lane overflows is dropped (it reconnects
@@ -33,12 +44,15 @@
 //! told so by `ServiceMsg::Caps`) gets a [`Window`]: other tiles' frames and
 //! bulk go only while fewer than its budget of bytes are unacknowledged
 //! (about what the link carries in [`FLOW_TARGET`] beyond its round trip,
-//! within [`WINDOW_MIN`]..[`WINDOW_MAX`]); control and the focused tile's
-//! frame may have [`URGENT_EXTRA`] more in flight. One message always goes
-//! when nothing is in flight. Remote clients that do not acknowledge (older
-//! builds, the phone) get a stopgap instead ([`Pace`]): while they typed in
-//! the last [`TYPING_SPAN`], other tiles' frames and bulk go at most
-//! [`TYPING_RATE`] bytes per second.
+//! within [`WINDOW_MIN`]..[`WINDOW_MAX`]); control may have
+//! [`URGENT_EXTRA`] more in flight, and so may the focused tile's frame once
+//! its previous one was acknowledged (one focused frame beyond the budget at
+//! most: a tile that prints fast never fills the tunnel ahead of its own
+//! echo, R3-C-01). One message always goes when nothing is in flight.
+//! Remote clients that do not acknowledge (older builds, the phone) get a
+//! stopgap instead ([`Pace`]): while they typed in the last [`TYPING_SPAN`],
+//! bulk goes at most [`TYPING_RATE`] bytes per second (other tiles' frames
+//! are paced by the pump).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -56,11 +70,18 @@ pub const BULK_LIMIT: usize = 1 << 16;
 pub const BULK_BYTES: usize = 96 << 20;
 /// A message larger than this goes with the bulk (a big reply, a long clipboard text).
 pub const SMALL: usize = 64 << 10;
-/// Bulk that waited this long goes before other tiles' frames.
+/// A reply larger than this waits in the replies lane, behind the focused frame.
+pub const REPLY_SMALL: usize = 4 << 10;
+/// Bulk that waited this long goes before other tiles' frames (and takes the
+/// focused frame's turn once per this long).
 pub const BULK_WAIT: Duration = Duration::from_millis(250);
-/// Bytes other tiles' frames and bulk may have unacknowledged, at least and at most.
+/// While the client types, a bulk message too large to be in flight at once
+/// waits at most this long, and one such message goes per this long.
+pub const BULK_HOLD: Duration = Duration::from_secs(2);
+/// Bytes other tiles' frames and bulk may have unacknowledged, at least and
+/// at most (under a Dev Tunnel's 1 MiB window with [`URGENT_EXTRA`], R3-A-05).
 pub const WINDOW_MIN: u64 = 32 << 10;
-pub const WINDOW_MAX: u64 = 256 << 10;
+pub const WINDOW_MAX: u64 = 768 << 10;
 /// The budget before any rate was measured.
 pub const WINDOW_START: u64 = 128 << 10;
 /// What control and the focused tile's frame may have in flight beyond the budget.
@@ -71,12 +92,20 @@ pub const FLOW_TARGET: Duration = Duration::from_millis(150);
 /// The rate is measured over the acknowledgements of the last second of a busy spell.
 const RATE_SPAN: Duration = Duration::from_secs(1);
 const RATE_MIN_SPAN: Duration = Duration::from_millis(100);
+/// After the client sent a large message (an upload), its acknowledgements
+/// arrive late, all at once: they say nothing about the link for this long.
+const UPLINK_QUIET: Duration = Duration::from_secs(1);
+/// An acknowledgement may be ahead of the writer's count by the message it
+/// is writing (pieces of a split frame included); never by more than this.
+const AHEAD_MAX: u64 = 4 * crate::protocol::MAX_FRAME as u64;
 /// Stopgap pacing (clients that do not acknowledge): while the client typed
 /// this recently, other tiles' frames and bulk go at most `TYPING_RATE`
 /// bytes per second, in bursts of `TYPING_BURST`.
 pub const TYPING_SPAN: Duration = Duration::from_secs(2);
 pub const TYPING_RATE: u64 = 128 << 10;
 const TYPING_BURST: u64 = 32 << 10;
+/// What one large message may hold the stopgap's bulk back at most.
+const TYPING_DEBT: Duration = Duration::from_secs(1);
 
 /// A message waiting for a client's writer: an ordinary one, or an image
 /// whose PNG is shared by every client it is queued for.
@@ -96,13 +125,28 @@ pub enum Push {
     Full,
 }
 
-/// One message for the writer; `frame_of`: the tile whose frame it is;
-/// `urgent`: control or the focused tile's frame (flow control lets more of
-/// those be in flight).
+/// The lane a message was taken from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lane {
+    Control,
+    Focused,
+    Reply,
+    Frame,
+    Bulk,
+}
+
+/// One message for the writer; `frame_of`: the tile whose frame it is.
 pub struct Taken {
     pub message: Outgoing,
     pub frame_of: Option<String>,
-    pub urgent: bool,
+    pub lane: Lane,
+}
+
+impl Taken {
+    /// Control or the focused tile's frame (flow control lets more of those be in flight).
+    pub fn urgent(&self) -> bool {
+        matches!(self.lane, Lane::Control | Lane::Focused)
+    }
 }
 
 /// What the writer gets from [`Outbox::next`].
@@ -167,27 +211,53 @@ pub struct Window {
     rate: Option<f64>,
     /// Acknowledgements of the current busy spell: (when, bytes acknowledged).
     samples: VecDeque<(Instant, u64)>,
+    /// Where the focused tile's last frame ends (bytes written up to it).
+    focused_end: u64,
+    /// Until when acknowledgements do not measure the link (the client's
+    /// upload held them back: [`UPLINK_QUIET`]).
+    quiet_until: Option<Instant>,
 }
 
 impl Default for Window {
     fn default() -> Self {
-        Self { written: 0, acked: 0, budget: WINDOW_START, sent: VecDeque::new(), alone: VecDeque::new(), rate: None, samples: VecDeque::new() }
+        Self {
+            written: 0,
+            acked: 0,
+            budget: WINDOW_START,
+            sent: VecDeque::new(),
+            alone: VecDeque::new(),
+            rate: None,
+            samples: VecDeque::new(),
+            focused_end: 0,
+            quiet_until: None,
+        }
     }
 }
 
 impl Window {
+    /// Bytes written and not acknowledged (an acknowledgement may overtake
+    /// the writer's own count of a message: R3-A-04).
     pub fn in_flight(&self) -> u64 {
-        self.written - self.acked
+        self.written.saturating_sub(self.acked)
     }
 
     pub fn budget(&self) -> u64 {
         self.budget
     }
 
-    /// Whether a message may be written now (`urgent`: control or the focused frame).
+    /// Whether a message may be written now (`urgent`: control).
     pub fn allows(&self, urgent: bool) -> bool {
         let in_flight = self.in_flight();
         in_flight == 0 || in_flight < self.budget + if urgent { URGENT_EXTRA } else { 0 }
+    }
+
+    /// Whether the focused tile's frame may be written now: within the
+    /// budget, or beyond it (up to [`URGENT_EXTRA`]) once its previous frame
+    /// was acknowledged, so at most one of its frames is in flight beyond
+    /// the budget and its echo never queues behind its own output (R3-C-01).
+    pub fn allows_focused(&self) -> bool {
+        let in_flight = self.in_flight();
+        in_flight == 0 || in_flight < self.budget || (self.acked >= self.focused_end && in_flight < self.budget + URGENT_EXTRA)
     }
 
     /// `bytes` were written at `now`.
@@ -201,7 +271,23 @@ impl Window {
             self.samples.clear();
         }
         self.written += bytes;
-        self.sent.push_back((self.written, bytes, now, alone));
+        // An acknowledgement that overtook this count already covers it.
+        if self.written > self.acked {
+            self.sent.push_back((self.written, bytes, now, alone));
+        }
+    }
+
+    /// The focused tile's frame of `bytes` was written at `now`.
+    pub fn wrote_focused(&mut self, bytes: u64, now: Instant) {
+        self.wrote(bytes, now);
+        self.focused_end = self.written;
+    }
+
+    /// The client's reader got a large message from it: its acknowledgements
+    /// waited behind it and come all at once, which says nothing about the link (R3-A-06).
+    pub fn uplink_busy(&mut self, now: Instant) {
+        self.quiet_until = Some(now + UPLINK_QUIET);
+        self.samples.clear();
     }
 
     /// The round trip without queueing: the shortest one of a message that
@@ -211,9 +297,12 @@ impl Window {
         self.alone.iter().map(|(rtt, size)| rtt.saturating_sub(transfer(*size))).min().unwrap_or_default()
     }
 
-    /// The client acknowledged `total` bytes at `now`.
+    /// The client acknowledged `total` bytes at `now`. It may be ahead of
+    /// what the writer counted so far (the client read a message before the
+    /// writer noted it written): kept, never clamped away (R3-A-04).
     pub fn acked(&mut self, total: u64, now: Instant) {
-        let total = total.min(self.written);
+        // Only the message being written can be ahead (a bogus total is bounded).
+        let total = total.min(self.written.saturating_add(AHEAD_MAX));
         if total <= self.acked {
             return;
         }
@@ -228,6 +317,12 @@ impl Window {
                 self.alone.push_back((now.saturating_duration_since(at), size));
             }
         }
+        // Acknowledgements an upload held back measure nothing.
+        if self.quiet_until.is_some_and(|until| now < until) {
+            self.samples.clear();
+            return;
+        }
+        self.quiet_until = None;
         self.samples.push_back((now, total));
         while self.samples.len() > 2 && self.samples.front().is_some_and(|(at, _)| now.saturating_duration_since(*at) > RATE_SPAN) {
             self.samples.pop_front();
@@ -250,42 +345,47 @@ impl Window {
 }
 
 /// The stopgap for remote clients that do not acknowledge: while the client
-/// typed in the last [`TYPING_SPAN`], other tiles' frames and bulk leave at
-/// most [`TYPING_RATE`] bytes per second (a token bucket kept as the time
-/// the next byte may go).
+/// typed in the last [`TYPING_SPAN`], bulk leaves at most [`TYPING_RATE`]
+/// bytes per second (a token bucket kept as the time the next byte may go).
+/// Other tiles' frames are not charged: the pump paces them (4 a second) on
+/// their own, so a large transfer never freezes them (R3-A-09); and what a
+/// large message costs is never owed for more than [`TYPING_DEBT`].
 #[derive(Debug)]
 struct Pace {
-    typed_at: Option<Instant>,
     free_at: Instant,
 }
 
 impl Pace {
-    fn typing(&self, now: Instant) -> bool {
-        self.typed_at.is_some_and(|at| now.saturating_duration_since(at) < TYPING_SPAN)
-    }
-
-    /// `None`: non-urgent bytes may go now; else when to look again.
-    fn blocked(&self, now: Instant) -> Option<Instant> {
-        if !self.typing(now) || self.free_at <= now {
+    /// `None`: bulk may go now; else when to look again (`typed_at`: when the client last typed).
+    fn blocked(&self, typed_at: Option<Instant>, now: Instant) -> Option<Instant> {
+        if !typing(typed_at, now) || self.free_at <= now {
             return None;
         }
-        let lifts = self.typed_at.map_or(now, |at| at + TYPING_SPAN);
+        let lifts = typed_at.map_or(now, |at| at + TYPING_SPAN);
         Some(self.free_at.min(lifts))
     }
 
-    fn charge(&mut self, bytes: u64, now: Instant) {
-        if !self.typing(now) {
+    fn charge(&mut self, bytes: u64, typed_at: Option<Instant>, now: Instant) {
+        if !typing(typed_at, now) {
             return;
         }
         let burst = Duration::from_secs_f64(TYPING_BURST as f64 / TYPING_RATE as f64);
-        self.free_at = self.free_at.max(now.checked_sub(burst).unwrap_or(now)) + Duration::from_secs_f64(bytes as f64 / TYPING_RATE as f64);
+        let free_at = self.free_at.max(now.checked_sub(burst).unwrap_or(now)) + Duration::from_secs_f64(bytes as f64 / TYPING_RATE as f64);
+        self.free_at = free_at.min(now + TYPING_DEBT);
     }
+}
+
+/// Whether the client typed in the last [`TYPING_SPAN`].
+fn typing(typed_at: Option<Instant>, now: Instant) -> bool {
+    typed_at.is_some_and(|at| now.saturating_duration_since(at) < TYPING_SPAN)
 }
 
 #[derive(Default)]
 struct Lanes {
     control: VecDeque<Entry>,
     control_bytes: usize,
+    /// Replies over [`REPLY_SMALL`] (up to [`SMALL`]), with when each was queued.
+    replies: VecDeque<(Instant, Outgoing, usize)>,
     /// With when each entry was queued.
     bulk: VecDeque<(Instant, Entry)>,
     bulk_bytes: usize,
@@ -312,8 +412,16 @@ struct Lanes {
     window: Option<Window>,
     /// The stopgap for a remote client that does not acknowledge.
     pace: Option<Pace>,
-    /// When to look again at what the pace holds back.
+    /// When to look again at what the pace or the typing hold keeps back.
     retry_at: Option<Instant>,
+    /// When the client last typed (its echo is due).
+    typed_at: Option<Instant>,
+    /// When a reply or bulk message last took the focused frame's turn.
+    shared_at: Option<Instant>,
+    /// Since when the large bulk message at the head of the lane has been
+    /// held while the client types, and when one held went last.
+    held_since: Option<Instant>,
+    large_at: Option<Instant>,
 }
 
 /// A client's outgoing lanes, shared by its senders and its writer.
@@ -407,7 +515,14 @@ impl Lanes {
                         message,
                         ServiceMsg::Doc { .. } | ServiceMsg::DocPatch { .. } | ServiceMsg::DocSaved { .. } | ServiceMsg::BusEvent { .. } | ServiceMsg::Image { .. } | ServiceMsg::Placements { .. }
                     );
-                return if bulk { self.push_bulk(Outgoing::Message(message), weight) } else { self.push_control(Outgoing::Message(message), weight) };
+                if bulk {
+                    return self.push_bulk(Outgoing::Message(message), weight);
+                }
+                // A mid-sized reply (a file preview, a folder, a transcript) waits behind the echo.
+                if weight > REPLY_SMALL && matches!(message, ServiceMsg::RpcReply { .. }) {
+                    return self.push_reply(Outgoing::Message(message), weight);
+                }
+                return self.push_control(Outgoing::Message(message), weight);
             }
         }
         Push::Queued
@@ -419,6 +534,16 @@ impl Lanes {
         }
         self.control_bytes += weight;
         self.control.push_back(Entry::Item(item, weight));
+        Push::Queued
+    }
+
+    /// Replies count against the control lane's budget.
+    fn push_reply(&mut self, item: Outgoing, weight: usize) -> Push {
+        if self.control.len() + self.replies.len() >= CONTROL_LIMIT || (self.control_bytes > 0 && self.control_bytes + weight > CONTROL_BYTES) {
+            return Push::Full;
+        }
+        self.control_bytes += weight;
+        self.replies.push_back((Instant::now(), item, weight));
         Push::Queued
     }
 
@@ -506,41 +631,122 @@ impl Lanes {
                     self.control_bytes = self.control_bytes.saturating_sub(*weight);
                 }
                 if let Some(message) = self.materialize(entry) {
-                    return Some(Taken { message, frame_of: None, urgent: true });
+                    return Some(Taken { message, frame_of: None, lane: Lane::Control });
                 }
             }
-            if let Some(tile) = self.focused.clone().filter(|tile| self.frames.contains_key(tile)) {
-                return self.take_frame(&tile, true);
+        }
+        let open = self.window.as_ref().is_none_or(|w| w.allows(false));
+        let focused = self.focused.clone().filter(|tile| self.frames.contains_key(tile));
+        // A reply or bulk message that waited takes the focused frame's turn
+        // once in a while: a tile printing without pause never starves them.
+        if open && focused.is_some() && self.shared_at.is_none_or(|at| now.saturating_duration_since(at) >= BULK_WAIT) {
+            let reply_due = self.replies.front().is_some_and(|(at, ..)| now.saturating_duration_since(*at) >= BULK_WAIT);
+            let bulk_due = self.bulk.front().is_some_and(|(at, _)| now.saturating_duration_since(*at) >= BULK_WAIT) && self.bulk_may_go(now);
+            if reply_due || bulk_due {
+                self.shared_at = Some(now);
+                if reply_due {
+                    return self.take_reply();
+                }
+                if let Some(taken) = self.take_bulk(now) {
+                    return Some(taken);
+                }
             }
         }
-        if !self.window.as_ref().is_none_or(|w| w.allows(false)) {
+        if let Some(tile) = focused
+            && self.window.as_ref().is_none_or(Window::allows_focused)
+        {
+            return self.take_frame(&tile, Lane::Focused);
+        }
+        if !open {
             return None;
         }
-        if let Some(at) = self.pace.as_ref().and_then(|p| p.blocked(now)) {
-            self.retry_at = Some(at);
-            return None;
+        if !self.replies.is_empty() {
+            return self.take_reply();
         }
-        let overdue = self.bulk.front().is_some_and(|(at, _)| now.saturating_duration_since(*at) >= BULK_WAIT);
+        let overdue = self.bulk.front().is_some_and(|(at, _)| now.saturating_duration_since(*at) >= BULK_WAIT) && self.bulk_may_go(now);
         if !overdue && let Some(tile) = self.frame_order.front().cloned() {
-            return self.take_frame(&tile, false);
+            return self.take_frame(&tile, Lane::Frame);
         }
+        if self.bulk_may_go(now)
+            && let Some(taken) = self.take_bulk(now)
+        {
+            return Some(taken);
+        }
+        let tile = self.frame_order.front().cloned()?;
+        self.take_frame(&tile, Lane::Frame)
+    }
+
+    /// Whether the bulk lane may give a message now: the stopgap's pace
+    /// (clients that do not acknowledge), and the typing hold of a message
+    /// too large to be in flight at once. Sets `retry_at` when it may later.
+    fn bulk_may_go(&mut self, now: Instant) -> bool {
+        if self.bulk.is_empty() {
+            return false;
+        }
+        if let Some(at) = self.pace.as_ref().and_then(|p| p.blocked(self.typed_at, now)) {
+            self.retry_at = Some(self.retry_at.map_or(at, |r| r.min(at)));
+            return false;
+        }
+        let limit = match (&self.window, &self.pace) {
+            (Some(window), _) => window.budget() as usize,
+            // The stopgap: about a second of its rate.
+            (None, Some(_)) => TYPING_RATE as usize,
+            // A local client: nothing waits in a tunnel.
+            (None, None) => return true,
+        };
+        if !typing(self.typed_at, now) || self.head_weight() <= limit {
+            self.held_since = None;
+            return true;
+        }
+        let since = *self.held_since.get_or_insert(now);
+        let lifts = [since + BULK_HOLD, self.typed_at.map_or(now, |at| at + TYPING_SPAN)].into_iter().min().unwrap_or(now);
+        // One held message goes per BULK_HOLD while the typing goes on.
+        let turn = self.large_at.is_none_or(|at| now.saturating_duration_since(at) >= BULK_HOLD);
+        if now >= lifts && turn {
+            return true;
+        }
+        let at = if now >= lifts { self.large_at.map_or(now, |at| at + BULK_HOLD) } else { lifts };
+        self.retry_at = Some(self.retry_at.map_or(at, |r| r.min(at)));
+        false
+    }
+
+    /// About how many bytes the message at the head of the bulk lane takes.
+    fn head_weight(&self) -> usize {
+        match self.bulk.front() {
+            Some((_, Entry::Item(_, weight))) => *weight,
+            Some((_, Entry::Latest(kind))) => self.latest.get(kind).map_or(0, weight),
+            Some((_, Entry::Sessions)) => self.sessions.as_ref().map_or(0, |s| 64 + s.upsert.len() * 320 + s.remove.len() * 40),
+            Some((_, Entry::Terminals)) | None => 0,
+        }
+    }
+
+    fn take_reply(&mut self) -> Option<Taken> {
+        let (_, message, weight) = self.replies.pop_front()?;
+        self.control_bytes = self.control_bytes.saturating_sub(weight);
+        Some(Taken { message, frame_of: None, lane: Lane::Reply })
+    }
+
+    fn take_bulk(&mut self, now: Instant) -> Option<Taken> {
+        let held = self.held_since.take().is_some();
         while let Some((_, entry)) = self.bulk.pop_front() {
             if let Entry::Item(_, weight) = &entry {
                 self.bulk_bytes = self.bulk_bytes.saturating_sub(*weight);
             }
             if let Some(message) = self.materialize(entry) {
-                return Some(Taken { message, frame_of: None, urgent: false });
+                if held {
+                    self.large_at = Some(now);
+                }
+                return Some(Taken { message, frame_of: None, lane: Lane::Bulk });
             }
         }
-        let tile = self.frame_order.front().cloned()?;
-        self.take_frame(&tile, false)
+        None
     }
 
-    fn take_frame(&mut self, tile: &str, urgent: bool) -> Option<Taken> {
+    fn take_frame(&mut self, tile: &str, lane: Lane) -> Option<Taken> {
         self.frame_order.retain(|t| t != tile);
         let message = self.frames.remove(tile)?;
         self.writing = Some(tile.to_owned());
-        Some(Taken { message: Outgoing::Message(message), frame_of: Some(tile.to_owned()), urgent })
+        Some(Taken { message: Outgoing::Message(message), frame_of: Some(tile.to_owned()), lane })
     }
 }
 
@@ -657,15 +863,31 @@ impl Outbox {
         }
     }
 
-    /// The writer wrote `bytes` (`urgent`: control, the focused frame or a heartbeat).
-    pub fn wrote(&self, bytes: usize, urgent: bool) {
+    /// The writer wrote `bytes` taken from `lane` (a heartbeat counts as control).
+    pub fn wrote(&self, bytes: usize, lane: Lane) {
         let now = Instant::now();
         let mut lanes = lock(&self.lanes);
         if let Some(window) = &mut lanes.window {
-            window.wrote(bytes as u64, now);
+            match lane {
+                Lane::Focused => window.wrote_focused(bytes as u64, now),
+                _ => window.wrote(bytes as u64, now),
+            }
         }
-        if !urgent && let Some(pace) = &mut lanes.pace {
-            pace.charge(bytes as u64, now);
+        let typed_at = lanes.typed_at;
+        if lane == Lane::Bulk
+            && let Some(pace) = &mut lanes.pace
+        {
+            pace.charge(bytes as u64, typed_at, now);
+        }
+    }
+
+    /// The client's reader got a message of `bytes` from it: a large one
+    /// (an upload) held its acknowledgements back (R3-A-06).
+    pub fn read(&self, bytes: u64) {
+        if bytes > SMALL as u64
+            && let Some(window) = &mut lock(&self.lanes).window
+        {
+            window.uplink_busy(Instant::now());
         }
     }
 
@@ -691,20 +913,19 @@ impl Outbox {
     pub fn set_paced(&self) {
         let mut lanes = lock(&self.lanes);
         if lanes.window.is_none() {
-            lanes.pace = Some(Pace { typed_at: None, free_at: Instant::now() });
+            lanes.pace = Some(Pace { free_at: Instant::now() });
         }
     }
 
-    /// The client typed (its echo is due: the stopgap holds back what is not urgent).
+    /// The client typed (its echo is due: what is not urgent waits more).
     pub fn typed(&self) {
-        if let Some(pace) = &mut lock(&self.lanes).pace {
-            pace.typed_at = Some(Instant::now());
-        }
+        lock(&self.lanes).typed_at = Some(Instant::now());
     }
 
     /// Other tiles' frames are slowed down: a client under the stopgap typed recently.
     pub fn slow_others(&self) -> bool {
-        lock(&self.lanes).pace.as_ref().is_some_and(|p| p.typing(Instant::now()))
+        let lanes = lock(&self.lanes);
+        lanes.pace.is_some() && typing(lanes.typed_at, Instant::now())
     }
 
     /// Bytes unacknowledged and the budget (`None`: no flow control).
@@ -757,7 +978,7 @@ pub struct Waiting {
 
 impl Lanes {
     fn waiting(&self) -> Waiting {
-        Waiting { control: self.control.len(), frames: self.frames.len(), bulk: self.bulk.len(), bytes: self.control_bytes + self.bulk_bytes }
+        Waiting { control: self.control.len() + self.replies.len(), frames: self.frames.len(), bulk: self.bulk.len(), bytes: self.control_bytes + self.bulk_bytes }
     }
 }
 
@@ -841,14 +1062,21 @@ mod tests {
     }
 
     #[test]
-    fn bulk_that_waited_goes_before_other_tiles_frames_never_before_the_focused_one() {
+    fn bulk_that_waited_goes_before_other_tiles_frames_and_takes_the_focused_frames_turn_once_in_a_while() {
         let outbox = Outbox::new();
         outbox.set_focused(Some("echo".into()));
         outbox.push(ServiceMsg::Doc { key: "k".into(), version: 1, json: "{}".into() });
+        outbox.push(ServiceMsg::Doc { key: "l".into(), version: 1, json: "{}".into() });
         std::thread::sleep(BULK_WAIT + Duration::from_millis(20));
         outbox.push_frame("busy", frame("busy", 1));
         outbox.push_frame("echo", frame("echo", 1));
-        assert_eq!(kinds(&outbox), ["frame echo", "doc k", "frame busy"]);
+        // One bulk message takes the echo's turn (a tile that prints without
+        // pause would starve it, R3-A-02), the next one waits its turn again.
+        assert_eq!(kinds(&outbox), ["doc k", "frame echo", "doc l", "frame busy"]);
+        outbox.push(ServiceMsg::Doc { key: "m".into(), version: 1, json: "{}".into() });
+        std::thread::sleep(Duration::from_millis(50));
+        outbox.push_frame("echo", frame("echo", 2));
+        assert_eq!(kinds(&outbox), ["frame echo", "doc m"], "bulk that did not wait goes after the echo");
     }
 
     #[test]
@@ -996,8 +1224,8 @@ mod tests {
     /// Takes what the writer would take now and says it was written (`bytes` each).
     fn write_all(outbox: &Outbox, bytes: usize) -> Vec<String> {
         let mut out = Vec::new();
-        while let Next::Item(Taken { message, frame_of, urgent }) = outbox.next(Instant::now()) {
-            outbox.wrote(bytes, urgent);
+        while let Next::Item(Taken { message, frame_of, lane }) = outbox.next(Instant::now()) {
+            outbox.wrote(bytes, lane);
             if let Some(tile) = &frame_of {
                 outbox.frame_written(tile);
             }
@@ -1034,7 +1262,172 @@ mod tests {
         assert_eq!(write_all(&outbox, 100 << 10), ["frame echo", "reply 2"]);
         outbox.acked(u64::MAX);
         let (in_flight, _) = outbox.flow().unwrap();
-        assert_eq!(in_flight, 0, "an acknowledgement never counts more than was written");
+        assert_eq!(in_flight, 0, "nothing is in flight once everything was acknowledged");
+    }
+
+    /// R3-A-04: the client may acknowledge a message before the writer
+    /// counted it written; that acknowledgement is not lost.
+    #[test]
+    fn an_acknowledgement_that_overtakes_the_writers_count_is_kept() {
+        let outbox = Outbox::new();
+        outbox.start_window();
+        let big = (WINDOW_MAX + URGENT_EXTRA) as usize;
+        outbox.push(ServiceMsg::RpcReply { id: 1, json: "x".repeat(SMALL + 1) });
+        let Next::Item(Taken { lane, .. }) = outbox.next(Instant::now()) else { panic!("the reply") };
+        // The client read it all and said so before the writer's count.
+        outbox.acked(big as u64);
+        outbox.wrote(big, lane);
+        assert_eq!(outbox.flow().unwrap().0, 0, "nothing is in flight");
+        outbox.push(ServiceMsg::RpcReply { id: 2, json: "x".repeat(SMALL + 1) });
+        assert_eq!(write_all(&outbox, 1000), ["reply 2"], "the next bulk message goes at once");
+        // A bogus total is bounded: the window still counts later writes.
+        outbox.acked(u64::MAX);
+        let (in_flight, _) = outbox.flow().unwrap();
+        assert_eq!(in_flight, 0);
+    }
+
+    /// The writer as `write_all` does, for one message (none: `None`).
+    fn write_one(outbox: &Outbox, bytes: usize) -> Option<(String, Lane)> {
+        let Next::Item(Taken { message, frame_of, lane }) = outbox.next(Instant::now()) else { return None };
+        outbox.wrote(bytes, lane);
+        if let Some(tile) = &frame_of {
+            outbox.frame_written(tile);
+        }
+        let Outgoing::Message(message) = message else { return Some(("image".into(), lane)) };
+        Some((kind(&message), lane))
+    }
+
+    /// R3-C-01: the tile you type in, printing fast, has at most one frame
+    /// in flight beyond the budget: its echo never waits behind 128 KiB of its own output.
+    #[test]
+    fn the_focused_tile_has_one_frame_at_most_beyond_the_budget() {
+        let outbox = Outbox::new();
+        outbox.set_focused(Some("echo".into()));
+        outbox.start_window();
+        let frame_bytes = 20 << 10;
+        let mut beyond = 0;
+        for n in 0..40 {
+            outbox.push_frame("echo", frame("echo", n));
+            match write_one(&outbox, frame_bytes) {
+                Some((_, Lane::Focused)) => {
+                    let (in_flight, budget) = outbox.flow().unwrap();
+                    if in_flight > budget {
+                        beyond += 1;
+                    }
+                    assert!(in_flight <= budget + frame_bytes as u64, "{in_flight} in flight, budget {budget}");
+                }
+                Some(other) => panic!("{other:?}"),
+                None => break,
+            }
+        }
+        assert_eq!(beyond, 1, "one frame beyond the budget, then it waits");
+        assert!(write_one(&outbox, frame_bytes).is_none(), "the next frame waits for an acknowledgement");
+        // Its acknowledgement lets the next one go (beyond the budget again).
+        let (in_flight, _) = outbox.flow().unwrap();
+        outbox.acked(in_flight);
+        assert!(matches!(write_one(&outbox, frame_bytes), Some((_, Lane::Focused))));
+        // Control still has its extra room.
+        outbox.push(ServiceMsg::Error { id: None, message: "e".into() });
+        assert!(matches!(write_one(&outbox, 1000), Some((_, Lane::Control))));
+    }
+
+    /// R3-A-02 (a): mid-sized replies wait behind the echo, not ahead of it.
+    #[test]
+    fn mid_sized_replies_wait_behind_the_echo() {
+        let outbox = Outbox::new();
+        outbox.set_focused(Some("echo".into()));
+        for id in 0..20 {
+            outbox.push(ServiceMsg::RpcReply { id, json: "x".repeat(50 << 10) });
+        }
+        outbox.push(ServiceMsg::RpcReply { id: 99, json: "small".into() });
+        outbox.push_frame("busy", frame("busy", 1));
+        outbox.push_frame("echo", frame("echo", 1));
+        let out = kinds(&outbox);
+        assert_eq!(out[..2], ["reply 99", "frame echo"], "a small reply stays in control; the echo goes before the large ones");
+        assert_eq!(out[2..22], (0..20).map(|id| format!("reply {id}")).collect::<Vec<_>>()[..], "the replies in order, before other tiles");
+        assert_eq!(out[22], "frame busy");
+    }
+
+    /// A link of `rate` bytes per second and `rtt` round trip behind a
+    /// tunnel buffer (in real time); every 16 ms the focused tile has a
+    /// frame of `frame_bytes`, and `queued` is pushed at `push_at`. Returns
+    /// when each of `queued` (replies by id) was written, and the longest a
+    /// focused frame waited in the link beyond the round trip (after the
+    /// first second, before `push_at`).
+    fn simulate_printing(rate: f64, rtt: Duration, frame_bytes: u64, queued: Vec<ServiceMsg>, push_at: Duration, seconds: u64) -> (Vec<Option<Duration>>, Duration) {
+        let outbox = Outbox::new();
+        outbox.set_focused(Some("echo".into()));
+        outbox.start_window();
+        let mut queued = Some(queued);
+        let mut done: Vec<Option<Duration>> = vec![None; queued.as_ref().map_or(0, Vec::len)];
+        let start = Instant::now();
+        let mut flight: VecDeque<(Duration, u64)> = VecDeque::new();
+        let mut link_free = Duration::ZERO;
+        let mut written = 0u64;
+        let mut worst = Duration::ZERO;
+        let mut next_frame = Duration::ZERO;
+        let mut n = 0;
+        loop {
+            let now = start.elapsed();
+            if now >= Duration::from_secs(seconds) {
+                break;
+            }
+            while flight.front().is_some_and(|(at, _)| *at <= now) {
+                let (_, total) = flight.pop_front().unwrap();
+                outbox.acked(total);
+            }
+            if now >= push_at && let Some(messages) = queued.take() {
+                for message in messages {
+                    outbox.push(message);
+                }
+            }
+            if now >= next_frame && !outbox.frame_state("echo").0 {
+                n += 1;
+                outbox.push_frame("echo", frame("echo", n));
+                next_frame = now + Duration::from_millis(16);
+            }
+            while let Next::Item(Taken { message, frame_of, lane }) = outbox.next(Instant::now()) {
+                let size = match (&message, lane) {
+                    (_, Lane::Focused) => frame_bytes,
+                    (Outgoing::Message(m), _) => weight(m) as u64,
+                    _ => 1000,
+                };
+                outbox.wrote(size as usize, lane);
+                written += size;
+                if let Some(tile) = &frame_of {
+                    outbox.frame_written(tile);
+                }
+                let begins = link_free.max(now + rtt / 2);
+                let arrives = begins + Duration::from_secs_f64(size as f64 / rate);
+                link_free = arrives;
+                if lane == Lane::Focused && now > Duration::from_secs(1) && now < push_at {
+                    worst = worst.max(arrives.saturating_sub(now) - rtt / 2);
+                }
+                if let Outgoing::Message(ServiceMsg::RpcReply { id, .. }) = message {
+                    done[id as usize] = Some(now);
+                }
+                flight.push_back((arrives + rtt / 2, written));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        (done, worst)
+    }
+
+    /// R3-C-01: the tile you type in printing faster than a slow link (150
+    /// KB/s) carries: its frames wait about the budget plus one frame in the
+    /// tunnel, not the budget plus 128 KiB (about a second here).
+    #[test]
+    fn a_tile_printing_without_pause_does_not_bury_its_own_echo() {
+        let (_, worst) = simulate_printing(150e3, Duration::from_millis(60), 6 << 10, Vec::new(), Duration::from_secs(60), 3);
+        assert!(worst < Duration::from_millis(500), "an echo waited {worst:?} in the link");
+    }
+
+    /// R3-A-02 (b): the same tile printing does not starve a large reply.
+    #[test]
+    fn a_tile_printing_without_pause_does_not_starve_bulk() {
+        let reply = ServiceMsg::RpcReply { id: 0, json: "x".repeat(300 << 10) };
+        let (done, _) = simulate_printing(150e3, Duration::from_millis(60), 6 << 10, vec![reply], Duration::from_secs(1), 4);
+        assert!(done[0].is_some_and(|at| at < Duration::from_secs(3)), "the reply went: {done:?}");
     }
 
     #[test]
@@ -1070,8 +1463,9 @@ mod tests {
     /// that takes everything (a tunnel): the writer sends 64 KB of bulk
     /// whenever the window lets it, the client acknowledges each message as
     /// it arrives. Returns (the budget at the end, the longest a byte waited
-    /// in the link's queue beyond the round trip).
-    fn simulate(rate: f64, rtt: Duration, seconds: u64) -> (u64, Duration) {
+    /// in the link's queue beyond the round trip, the bytes per second the
+    /// window let through).
+    fn simulate(rate: f64, rtt: Duration, seconds: u64) -> (u64, Duration, f64) {
         let mut window = Window::default();
         let start = Instant::now();
         let mut now = start;
@@ -1098,22 +1492,107 @@ mod tests {
             }
             now += step;
         }
-        (window.budget(), worst)
+        (window.budget(), worst, window.acked as f64 / seconds as f64)
     }
 
     #[test]
     fn the_budget_follows_the_link() {
         // A slow link (200 KB/s): an echo waits about FLOW_TARGET plus one message behind bulk.
-        let (budget, worst) = simulate(200e3, Duration::from_millis(60), 20);
+        let (budget, worst, _) = simulate(200e3, Duration::from_millis(60), 20);
         assert!(budget <= 64 << 10, "slow link: budget {budget}");
         assert!(worst < Duration::from_millis(700), "slow link: bulk queued {worst:?} ahead of an echo");
-        // A fast link far away (20 MB/s, 120 ms): the window opens to its maximum.
-        let (budget, _) = simulate(20e6, Duration::from_millis(120), 10);
+        // A fast link far away (20 MB/s, 120 ms): the window opens to its
+        // maximum, which lets bulk use a fair part of the link (R3-A-05).
+        let (budget, _, throughput) = simulate(20e6, Duration::from_millis(120), 10);
         assert_eq!(budget, WINDOW_MAX, "fast link: budget {budget}");
+        assert!(throughput > 5e6, "fast link: bulk at {throughput:.0} B/s");
         // 1 MB/s, as the faults step: under half a second of queue.
-        let (budget, worst) = simulate(1e6, Duration::from_millis(20), 20);
+        let (budget, worst, _) = simulate(1e6, Duration::from_millis(20), 20);
         assert!((WINDOW_MIN..=WINDOW_MAX).contains(&budget));
         assert!(worst < Duration::from_millis(500), "1 MB/s: {worst:?}");
+    }
+
+    /// R3-A-06: acknowledgements an upload held back (they come late, all at
+    /// once) do not lower the budget.
+    #[test]
+    fn acknowledgements_held_back_by_an_upload_do_not_shrink_the_budget() {
+        let mut window = Window::default();
+        let start = Instant::now();
+        // A steady 2 MB/s with the window full: the budget settles.
+        let mut at = start;
+        for _ in 0..200 {
+            window.wrote(16 << 10, at);
+            at += Duration::from_millis(8);
+            window.acked(window.written.saturating_sub(WINDOW_START), at);
+        }
+        let before = window.budget();
+        // An upload: the reader gets a large message, the acknowledgements behind it come after a second, at once.
+        window.uplink_busy(at);
+        for _ in 0..8 {
+            window.wrote(16 << 10, at);
+        }
+        at += Duration::from_secs(1);
+        for step in 0..8 {
+            window.acked(window.written - (8 - step) * (16 << 10), at);
+        }
+        window.acked(window.written, at + Duration::from_millis(150));
+        assert!(window.budget() >= before, "budget {} fell below {before}", window.budget());
+        // Without the upload, the same stall would have measured a low rate.
+        let mut plain = Window::default();
+        let mut at = start;
+        for _ in 0..200 {
+            plain.wrote(16 << 10, at);
+            at += Duration::from_millis(8);
+            plain.acked(plain.written.saturating_sub(WINDOW_START), at);
+        }
+        let before = plain.budget();
+        for _ in 0..8 {
+            plain.wrote(16 << 10, at);
+        }
+        at += Duration::from_secs(1);
+        plain.acked(plain.written, at + Duration::from_millis(150));
+        assert!(plain.budget() < before, "the test's stall does measure low without the upload");
+    }
+
+    /// R3-A-09: under the stopgap a large transfer written while typing
+    /// never freezes other tiles, and holds later bulk a second at most.
+    #[test]
+    fn a_large_transfer_while_typing_does_not_freeze_other_tiles() {
+        let outbox = Outbox::new();
+        outbox.set_paced();
+        outbox.push(ServiceMsg::RpcReply { id: 1, json: "x".repeat(2 << 20) });
+        let Next::Item(Taken { lane, .. }) = outbox.next(Instant::now()) else { panic!("the reply") };
+        outbox.typed();
+        outbox.wrote(2 << 20, lane);
+        outbox.push_frame("other", frame("other", 1));
+        let started = Instant::now();
+        assert_eq!(write_all(&outbox, 1000), ["frame other"], "another tile's frame goes at once");
+        assert!(started.elapsed() < Duration::from_millis(300));
+        outbox.push(ServiceMsg::Doc { key: "k".into(), version: 1, json: "{}".into() });
+        let started = Instant::now();
+        assert!(matches!(outbox.next(Instant::now() + Duration::from_secs(5)), Next::Item(Taken { lane: Lane::Bulk, .. })));
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(800) && waited < Duration::from_millis(1500), "bulk waited {waited:?}");
+    }
+
+    /// R3-C-01: while the client types, a bulk message too large to be in
+    /// flight at once waits (at most BULK_HOLD); a small one does not.
+    #[test]
+    fn a_large_bulk_message_waits_while_the_client_types() {
+        let outbox = Outbox::new();
+        outbox.set_focused(Some("echo".into()));
+        outbox.start_window();
+        outbox.typed();
+        outbox.push(ServiceMsg::Doc { key: "small".into(), version: 1, json: "{}".into() });
+        assert_eq!(write_all(&outbox, 1000), ["doc small"], "a small one goes");
+        outbox.push(ServiceMsg::Doc { key: "large".into(), version: 1, json: "x".repeat(600 << 10) });
+        outbox.push_frame("busy", frame("busy", 1));
+        outbox.push_frame("echo", frame("echo", 1));
+        assert_eq!(write_all(&outbox, 1000), ["frame echo", "frame busy"], "the large one waits while you type");
+        let started = Instant::now();
+        let Next::Item(Taken { lane: Lane::Bulk, .. }) = outbox.next(Instant::now() + Duration::from_secs(5)) else { panic!("the large one goes") };
+        let waited = started.elapsed();
+        assert!(waited > Duration::from_millis(1500) && waited < Duration::from_millis(2500), "it waited {waited:?}");
     }
 
     #[test]
@@ -1137,7 +1616,7 @@ mod tests {
         outbox.push_frame("echo", frame("echo", 1));
         assert_eq!(write_all(&outbox, 1000), ["frame echo"], "the echo is never paced");
         let started = Instant::now();
-        let Next::Item(Taken { urgent: false, .. }) = outbox.next(Instant::now() + Duration::from_secs(5)) else { panic!("the next reply") };
+        let Next::Item(Taken { lane: Lane::Bulk, .. }) = outbox.next(Instant::now() + Duration::from_secs(5)) else { panic!("the next reply") };
         let waited = started.elapsed();
         assert!(waited >= Duration::from_millis(200), "paced: {waited:?}");
         // A client told to acknowledge leaves the stopgap.
