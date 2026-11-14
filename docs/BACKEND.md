@@ -225,7 +225,11 @@ show (`sync::stable_id`), so they end up as one box.
 After a reconnect (or a service restart) the client opens the document again.
 `Replica::resync` takes the service's document and puts the client's own
 changes that are not known to have arrived on top; they go out with the next
-edit. While offline nothing is sent; local changes wait. A `DocOpen` whose
+edit. While offline nothing is sent; local changes wait. A client that
+quits meanwhile (or while it waits for the document again) keeps them next
+to its preferences (`<home>/prefs/<client>-<key>.unsent.json`, written by
+`App::save_now`); its next start puts them on top of the document and sends
+them, then forgets the file. A `DocOpen` whose
 `Doc` has not come 10 s later is sent again (then after 20, 40 and 80 s); an
 answer that comes after the first one was taken, no newer than this copy, is
 dropped (its changes since would otherwise go again, over newer ones). A `Doc`

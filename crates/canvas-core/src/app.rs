@@ -259,6 +259,8 @@ pub struct App {
     pub doc_asked_at: Instant,
     /// `DocOpen`s sent on this connection and not answered yet.
     pub docs_asked: u32,
+    /// Changes kept by the last run wait to be sent (their file goes then).
+    pub unsent_pending: bool,
     /// How many times the document was asked for again without an answer.
     pub doc_retries: u32,
     /// When local document changes started waiting to be sent.
@@ -467,10 +469,18 @@ impl App {
         let mut doc = opened.doc;
         let mut prefs = prefs.map(PrefsFile::new);
         let mut space = crate::spaces::Space::Canvas;
+        // Canvas changes the last run could not send: on top, sent with the first edit.
+        let mut restored = 0;
         if let Some(file) = prefs.as_mut() {
             let loaded = file.load().unwrap_or_else(|| ClientPrefs::of(&doc));
             space = loaded.space.as_deref().and_then(crate::spaces::Space::parse).unwrap_or_default();
             loaded.apply(&mut doc);
+            if let Some(unsent) = file.load_unsent().filter(|u| u.key == replica.key) {
+                restored = unsent.ops.iter().filter(|op| crate::sync::apply(&mut doc, op).is_ok()).count();
+                if restored == 0 {
+                    file.clear_unsent();
+                }
+            }
         }
         let (info, info_error) = match backend.info() {
             Ok(info) => (info, None),
@@ -498,6 +508,7 @@ impl App {
             doc_resync: false,
             doc_asked_at: Instant::now(),
             docs_asked: 0,
+            unsent_pending: false,
             doc_retries: 0,
             dirty_at: None,
             prefs_dirty_at: None,
@@ -641,6 +652,11 @@ impl App {
         }
         let differs = app.conn.remote_build_differs().map(str::to_owned);
         app.note_mixed_builds(differs);
+        if restored > 0 {
+            app.unsent_pending = true;
+            app.mark_dirty();
+            app.notify(format!("{restored} canvas change(s) not sent before Atelier closed last time go to the service now."), false);
+        }
         app
     }
 
@@ -679,6 +695,27 @@ impl App {
         crate::notebook::flush(self);
         self.flush_doc();
         self.save_prefs();
+        self.save_unsent();
+    }
+
+    /// Canvas changes that cannot go now (offline, waiting for the canvas
+    /// again, the service restarting) are kept for the next start instead of
+    /// being lost with this client; those sent but not confirmed while
+    /// offline too (applying one twice changes nothing).
+    fn save_unsent(&mut self) {
+        let pending = !self.connected || self.doc_resync || self.restarting.is_some();
+        if !pending || self.replica.key == "detached" {
+            return;
+        }
+        let Some(file) = &self.prefs else { return };
+        let ops = crate::sync::diff(self.replica.synced(), &self.doc);
+        if ops.is_empty() {
+            return;
+        }
+        let unsent = crate::prefs::Unsent { key: self.replica.key.clone(), saved_ms: now_ms(), ops };
+        if let Err(error) = file.save_unsent(&unsent) {
+            self.save_error = Some(format!("cannot keep the canvas changes not sent yet: {error:#}"));
+        }
     }
 
     /// Sends local document changes to the service (as one edit).
@@ -697,6 +734,11 @@ impl App {
         if self.conn.tx.try_send(message).is_err() {
             // The edit is lost: start over from the service's document.
             self.request_doc();
+        } else if std::mem::take(&mut self.unsent_pending)
+            && let Some(file) = &self.prefs
+        {
+            // What the last run kept went with it.
+            file.clear_unsent();
         }
     }
 
@@ -2904,6 +2946,40 @@ mod connection_tests {
         // Running again here: no doubt left.
         app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "s2".into(), alive: true, started_ms: 2, ..Default::default() }]));
         assert!(app.live_doubted.is_empty());
+    }
+
+    #[test]
+    fn changes_made_offline_survive_a_quit_and_go_at_the_next_start() {
+        let home = std::env::temp_dir().join(format!("cc-unsent-{}", uuid::Uuid::new_v4()));
+        let prefs = crate::prefs::PrefsFile::path(&home, "default", "k");
+        let opened = || Opened { key: "k".into(), version: 3, path: String::new(), client: 7, doc: Doc { nodes: vec![node("a")], ..Doc::default() } };
+        let start = || {
+            let (conn, sent) = detached();
+            let (app_tx, _app_rx) = unbounded();
+            (App::new(conn, Arc::new(crate::rpc::Offline), opened(), false, ".".into(), app_tx, Some(prefs.clone())), sent)
+        };
+        let (mut app, sent) = start();
+        // Offline: the move cannot go; quitting keeps it.
+        app.connected = false;
+        app.doc.node_mut("a").unwrap().x = 12;
+        app.mark_dirty();
+        app.save_now();
+        assert!(edits(&sent).is_empty());
+        drop(app);
+        // The next start puts it back and sends it; then it is forgotten.
+        let (mut app, sent) = start();
+        assert_eq!(app.doc.node("a").unwrap().x, 12);
+        assert!(app.notice.as_ref().is_some_and(|n| n.text.contains("1 canvas change")));
+        app.flush_doc();
+        assert!(matches!(edits(&sent).as_slice(), [(3, ops)] if ops.len() == 1));
+        drop(app);
+        let (app, _sent) = start();
+        assert_eq!(app.doc.node("a").unwrap().x, 0, "sent once, not again");
+        // Connected with everything sent: nothing is kept.
+        let mut app = app;
+        app.save_now();
+        assert!(crate::prefs::PrefsFile::new(prefs.clone()).load_unsent().is_none());
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]
