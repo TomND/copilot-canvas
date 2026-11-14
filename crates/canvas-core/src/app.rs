@@ -705,7 +705,8 @@ impl App {
             resumed_children: HashSet::new(),
             automations: Vec::new(),
             automations_loading: false,
-            automations_at: Instant::now() - Duration::from_secs(60),
+            // Far enough back that the first tick asks at once (the idle interval is 2 minutes).
+            automations_at: Instant::now().checked_sub(Duration::from_secs(600)).unwrap_or_else(Instant::now),
             automations_error: None,
             automations_factory_ok: false,
             automations_folder,

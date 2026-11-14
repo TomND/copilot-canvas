@@ -1798,6 +1798,9 @@ mod tests {
         assert!(app.automations_watched(), "its box is on the visible canvas");
         app.doc.view.x = 500;
         assert!(!app.automations_watched(), "scrolled away: polled every 2 minutes");
+        // A new window asks at once, whatever the interval (the first ask used
+        // to wait a minute once the idle interval became 2 minutes).
+        assert!(app.automations_at.elapsed() >= Duration::from_secs(120), "a new window's first poll is due at once");
         app.side_view = SideView::Automations;
         assert!(app.automations_watched(), "the automations view");
         app.side_view = SideView::Sessions;
