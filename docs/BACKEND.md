@@ -51,7 +51,7 @@ the connection dropped while waiting).
 
 | Request | Answer | Used by |
 |---|---|---|
-| `Info` | `Info(BackendInfo)`: data folder, user profile folder, Copilot history folder, `data.db` path, the machine's default agent, installed agents | App start (agent for new sessions, installed agents, suggested group folders, folder browser start): asked at once only the first time; later starts use the copy the last run kept (`<home>/prefs/<client>-<key>.backend.json`) and ask again in the background |
+| `Info` | `Info(BackendInfo)`: data folder, user profile folder, Copilot history folder, `data.db` path, the machine's default agent, installed agents | App start (agent for new sessions, installed agents, suggested group folders, folder browser start): asked at once only the first time; later starts use the copy the last run kept (`<home>/prefs/<client>-<key>.backend.json`) and ask again in the background; without an answer it is asked again 15 s later, then 30 s, then every minute, and every reconnect asks once (R3-C-06) |
 | `ConfigSnapshot { agent }` | `Config(Snapshot)` (problems in `errors`; plugin folders filled in as `Plugin::local_folder`) | Plugins / MCP / Skills / Agents / Settings views, MCP picker, migration |
 | `ConfigSetEnabled { agent, what, name, enabled }` | `Text` (CLI output) | Space in the views |
 | `ConfigRemove { agent, what, name }` | `Text` | Del in the views |

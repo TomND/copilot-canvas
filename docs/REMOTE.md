@@ -306,9 +306,11 @@ copied and emptied when it cannot be renamed at its size limit.
   (the service restarting closes them too, for shorter). Closes count as
   failures instead (two restart it) for a minute after a connection through
   the child went silent until this client's watchdog closed it (a service
-  that shuts down closes its connections; a lost relay leaves them silent),
-  and while the child's own output said its relay connection was lost or is
-  reconnecting. But a child is never restarted when it is
+  that shuts down closes its connections; a lost relay leaves them silent;
+  any byte read counts, a part of a large message too), and while the
+  child's own output said its relay connection was lost or is reconnecting
+  (until it says the relay is back: "Reconnected …", "Connected to …",
+  R3-C-07). But a child is never restarted when it is
   younger than 10 s, nor one that carries another connection that is up
   (another window, an upload), and an answer from the service (a refusal
   included) counts as the tunnel working.

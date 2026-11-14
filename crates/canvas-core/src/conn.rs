@@ -300,6 +300,9 @@ pub struct Conn {
     /// Ends the connection (its reader then ends and the front end
     /// reconnects); `None` for a detached connection.
     closer: Option<Closer>,
+    /// When the last byte came (any read, a part of a message too); `None`
+    /// for a detached connection.
+    pub liveness: Option<Arc<Liveness>>,
 }
 
 impl Conn {
@@ -342,6 +345,7 @@ impl Conn {
             wire: Arc::default(),
             legacy: false,
             closer: None,
+            liveness: None,
         }
     }
 }
@@ -894,7 +898,7 @@ fn establish(
     if v8 {
         // A connection silent past `dead_after` is closed; the reader then ends.
         let slice = (options.dead_after / 4).min(Duration::from_millis(250));
-        let closer = closer.clone();
+        let (closer, liveness) = (closer.clone(), liveness.clone());
         std::thread::Builder::new().name("service-watchdog".into()).spawn(move || {
             while reading.load(Ordering::Acquire) {
                 std::thread::sleep(slice);
@@ -915,6 +919,7 @@ fn establish(
         wire: stats,
         legacy: false,
         closer: Some(closer),
+        liveness: Some(liveness),
     })
 }
 

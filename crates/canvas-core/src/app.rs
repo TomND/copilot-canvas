@@ -88,6 +88,32 @@ pub struct LiveDoubt {
     pub summary: SessionSummary,
 }
 
+/// A bus snapshot this long after a restore cancel that still lists the box
+/// comes from a service that ignored the cancel (an earlier one may predate it).
+pub const RESTORE_CANCEL_SETTLE: Duration = Duration::from_secs(3);
+
+/// The first wait before the backend's facts are asked again after no answer.
+pub const INFO_RETRY: Duration = Duration::from_secs(15);
+
+/// Asking the backend for its facts again ([`App::info_check`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfoCheck {
+    Idle,
+    /// A request is under way.
+    Asking,
+    /// No answer: asked again at `at` (`tries` so far).
+    Retry { at: Instant, tries: u32 },
+}
+
+/// What a launch used that only its first start uses ([`App::launch_once`]).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct LaunchOnce {
+    pub prompt: Option<String>,
+    pub fork: Option<String>,
+    /// The box was new (a new conversation, not a resume).
+    pub fresh: bool,
+}
+
 /// Box removals the last run kept ([`App::held_removals`]).
 #[derive(Debug)]
 pub struct HeldRemovals {
@@ -314,6 +340,8 @@ pub struct App {
     /// Paths, settings and agents of the machine the agents run on.
     pub backend: Arc<dyn Backend>,
     pub info: BackendInfo,
+    /// Asking the backend for `info` again (in the background).
+    pub info_check: InfoCheck,
     pub conn: Conn,
     pub connected: bool,
     /// Where the service is (reconnects go there); `None`: never reconnect.
@@ -347,6 +375,12 @@ pub struct App {
     pub closing_retry: HashMap<String, Instant>,
     /// … and those sent again already (a second such refusal is shown).
     pub closing_retried: HashSet<String>,
+    /// Boxes this window asked the restore not to resume, and when: told
+    /// once the service's snapshot says whether it did (R3-C-09).
+    pub restore_cancels: HashMap<String, Instant>,
+    /// What each launch under way used only once (its first prompt, its
+    /// native fork, `fresh`): given back when the service refuses it.
+    pub launch_once: HashMap<String, LaunchOnce>,
     pub preparing: HashSet<String>,
     pub node_errors: HashMap<String, String>,
     pub pending_prompts: HashMap<String, String>,
@@ -394,8 +428,9 @@ pub struct App {
     /// client took it, nor after a reconnect, until you act here).
     pub claim_held: Option<String>,
     /// The size each shown terminal had when this client last asked for
-    /// another: going back to it is a resize undone, not another client's.
-    pub resized_from: HashMap<String, (u16, u16)>,
+    /// another, and when: going back to it soon after is a resize undone,
+    /// not another client's (`sizes::REVERT_WITHIN`).
+    pub resized_from: HashMap<String, ((u16, u16), Instant)>,
     pub last_tracked: Vec<String>,
     pub stats: Option<ServiceStats>,
     pub stats_at: Instant,
@@ -574,6 +609,7 @@ impl App {
             save_error: None,
             backend,
             info,
+            info_check: InfoCheck::Idle,
             conn,
             connected: true,
             target: None,
@@ -592,6 +628,8 @@ impl App {
             launching: HashMap::new(),
             closing_retry: HashMap::new(),
             closing_retried: HashSet::new(),
+            launch_once: HashMap::new(),
+            restore_cancels: HashMap::new(),
             preparing: HashSet::new(),
             node_errors: HashMap::new(),
             pending_prompts: HashMap::new(),
@@ -709,6 +747,8 @@ impl App {
         }
         if let Some(error) = info_error {
             app.notify(format!("The backend did not answer: {error}"), true);
+            // Asked again in the background until it answers (R3-C-06).
+            app.info_check = InfoCheck::Retry { at: Instant::now() + INFO_RETRY, tries: 1 };
         }
         let differs = app.conn.remote_build_differs().map(str::to_owned);
         app.note_mixed_builds(differs);
@@ -722,16 +762,36 @@ impl App {
     }
 
     /// Asks the backend for its facts on a background thread; they replace
-    /// the copy the app started with when they come.
-    fn refresh_backend_info(&self) {
+    /// the copy the app started with when they come. Without an answer they
+    /// are asked again, 15 s later, then 30 s, then every minute (the
+    /// failure is said once); a reconnect asks again too (R3-C-06).
+    pub fn refresh_backend_info(&mut self) {
+        let tries = match self.info_check {
+            InfoCheck::Asking => return,
+            InfoCheck::Retry { tries, .. } => tries,
+            InfoCheck::Idle => 0,
+        };
+        self.info_check = InfoCheck::Asking;
         let (backend, tx) = (self.backend.clone(), self.app_tx.clone());
-        let _ = std::thread::Builder::new().name("backend-info".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("backend-info".into()).spawn(move || {
             let info = backend.info();
             let _ = tx.send(AppEvent::Run(Box::new(move |app: &mut App| match info {
-                Ok(info) => app.set_backend_info(info),
-                Err(error) => app.notify(format!("The backend did not answer: {error:#}"), true),
+                Ok(info) => {
+                    app.info_check = InfoCheck::Idle;
+                    app.set_backend_info(info);
+                }
+                Err(error) => {
+                    if tries == 0 {
+                        app.notify(format!("The backend did not answer: {error:#}"), true);
+                    }
+                    let wait = (INFO_RETRY * 2u32.pow(tries.min(2))).min(Duration::from_secs(60));
+                    app.info_check = InfoCheck::Retry { at: Instant::now() + wait, tries: tries + 1 };
+                }
             })));
         });
+        if spawned.is_err() {
+            self.info_check = InfoCheck::Retry { at: Instant::now() + INFO_RETRY, tries: tries + 1 };
+        }
     }
 
     /// The backend's facts, as they are now (kept for the next start).
@@ -1196,6 +1256,8 @@ impl App {
         self.reset_service_state();
         // The new connection opens the document again (local changes are kept).
         self.request_doc();
+        // A restarted or upgraded service may have other facts (agents installed, home).
+        self.refresh_backend_info();
         let repaired = std::mem::take(&mut self.resync.repairing);
         if lost > 0 {
             self.notify(format!("Reconnected. {lost} keystroke(s) were not delivered."), true);
@@ -2046,6 +2108,8 @@ impl App {
             return;
         }
         let mut record_model = None;
+        // What only this start uses, given back if the service refuses it (R3-C-04).
+        let mut once = LaunchOnce { fresh: node.fresh, ..LaunchOnce::default() };
         let kind = match &node.command {
             Some(command) if !command.is_empty() => LaunchKind::Command { program: command[0].clone(), args: command[1..].to_vec() },
             _ => {
@@ -2053,6 +2117,7 @@ impl App {
                 let prompt = self.pending_prompts.remove(id);
                 // A native fork starts once from its parent; later launches resume it.
                 let fork_from = self.pending_forks.remove(id).filter(|_| node.fresh);
+                (once.prompt, once.fork) = (prompt.clone(), fork_from.clone());
                 let launch = crate::side::agent_launch(&node, &self.doc.defaults, group.as_ref(), prompt, fork_from, !node.fresh);
                 // A canvas-wide agent's chat may read the canvas's goals and skills, as its runs do.
                 let mut launch = launch;
@@ -2070,6 +2135,11 @@ impl App {
         };
         self.send(ClientMsg::Launch { id: id.to_owned(), kind, cwd: cwd.clone(), cols, rows });
         self.launching.insert(id.to_owned(), Instant::now());
+        if once.prompt.is_some() || once.fork.is_some() || once.fresh {
+            self.launch_once.insert(id.to_owned(), once);
+        } else {
+            self.launch_once.remove(id);
+        }
         if let Some(n) = self.doc.node_mut(id) {
             n.fresh = false;
             n.cwd = Some(cwd.clone());
@@ -2145,6 +2215,8 @@ impl App {
                     }
                     if info.alive {
                         let launched_here = self.launching.remove(&info.id).is_some();
+                        // It started: what its start used is spent.
+                        self.launch_once.remove(&info.id);
                         // Started again (here, by another client or the restore):
                         // its size is sent again, whatever an earlier run had. It
                         // is claimed only when this window started it: one the
@@ -2173,6 +2245,7 @@ impl App {
                 if let Some(held) = self.held_removals.as_mut() {
                     held.terms_in = true;
                 }
+                self.check_restore_cancels(false);
                 // A reattaching client restores its tiles from the saved order.
                 if self.tile_slots.is_empty() {
                     let restore: Vec<String> =
@@ -2306,6 +2379,9 @@ impl App {
         if self.launch_refused(id, message) {
             return;
         }
+        // Not started: what its start used goes with the next one (a chat
+        // message, a native fork, a new conversation), never lost (R3-C-04).
+        let kept = self.give_back_launch(id);
         // Its own previous run still closing (Enter right after it exited):
         // started again once in a moment, preparing meanwhile, never shown as
         // open elsewhere (R2-D-10).
@@ -2317,9 +2393,39 @@ impl App {
             return;
         }
         let reason = launch_reason(message);
+        // The service says the session runs elsewhere: a doubt of its `live`
+        // (a terminal that ended here) was wrong, so ↗ and the holder show (R3-C-08).
+        if is_open_elsewhere(message) {
+            self.believe_live(id);
+        }
         self.node_errors.insert(id.to_owned(), reason.clone());
         let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_else(|| id.to_owned());
-        self.notify(format!("“{name}” was not started: {reason}"), true);
+        let kept = if kept { " (its message is kept: start it again to send it)" } else { "" };
+        self.notify(format!("“{name}” was not started: {reason}{kept}"), true);
+    }
+
+    /// A start the service refused: what it used only once (its first
+    /// prompt, its native fork, `fresh`) is put back for the next start.
+    /// True when a message waits again.
+    fn give_back_launch(&mut self, id: &str) -> bool {
+        let Some(once) = self.launch_once.remove(id) else { return false };
+        if let Some(fork) = once.fork {
+            self.pending_forks.entry(id.to_owned()).or_insert(fork);
+        }
+        if once.fresh
+            && let Some(node) = self.doc.node_mut(id)
+            && !node.fresh
+        {
+            node.fresh = true;
+            self.mark_dirty();
+        }
+        match once.prompt {
+            Some(prompt) => {
+                self.pending_prompts.entry(id.to_owned()).or_insert(prompt);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Copilot asked to copy (OSC 52): use the Windows clipboard directly; the
@@ -2649,10 +2755,13 @@ impl App {
     }
 
     /// Nothing came in for most of the dead-after time (heartbeats come every
-    /// 2 s): the connection went silent rather than being closed.
+    /// 2 s): the connection went silent rather than being closed. Any byte
+    /// read counts, a part of a large message too (R3-C-07).
     pub fn went_silent(&mut self) -> bool {
         self.note_heard();
-        self.heard.1.elapsed() >= self.conn_options.dead_after * 2 / 3
+        let quiet = self.heard.1.elapsed();
+        let quiet = self.conn.liveness.as_ref().map_or(quiet, |l| l.silence().min(quiet));
+        quiet >= self.conn_options.dead_after * 2 / 3
     }
 
     /// Box `id`'s terminal ended here: if its session's summary says it is
@@ -2662,6 +2771,20 @@ impl App {
         let Some(summary) = self.sessions.get(native_id(node)).filter(|s| s.live) else { return };
         let doubt = LiveDoubt { box_id: id.to_owned(), since: Instant::now(), summary: summary.clone() };
         self.live_doubted.insert(summary.id.clone(), doubt);
+    }
+
+    /// Box `id`'s session is live elsewhere after all (the service refused
+    /// its start for that): no doubt, and its summary says live again.
+    fn believe_live(&mut self, id: &str) {
+        let Some(node) = self.doc.node(id).filter(|n| n.kind == NodeKind::Session) else { return };
+        let session = native_id(node).to_owned();
+        self.live_doubted.remove(&session);
+        self.live_doubted.retain(|_, d| d.box_id != id);
+        if let Some(summary) = self.sessions.get_mut(&session).filter(|s| !s.live) {
+            summary.live = true;
+            self.sessions_rev += 1;
+            self.needs_draw = true;
+        }
     }
 
     /// Doubted sessions still live and unchanged after [`LIVE_DOUBT`] are
@@ -2688,7 +2811,21 @@ impl App {
         for id in due {
             self.closing_retry.remove(&id);
             self.launching.remove(&id);
-            if !self.connected || self.owned_alive(&id) || self.doc.node(&id).is_none() {
+            let Some(name) = self.doc.node(&id).map(|n| n.name.clone()) else {
+                self.pending_prompts.remove(&id);
+                continue;
+            };
+            // Started meanwhile (another window, the phone): its message cannot go as a first prompt.
+            if self.owned_alive(&id) {
+                if self.pending_prompts.remove(&id).is_some() {
+                    self.notify(format!("“{name}” was started elsewhere meanwhile: its message was not sent; type it in its terminal."), true);
+                }
+                continue;
+            }
+            // Offline when its moment came: said, and its message kept for Enter.
+            if !self.connected {
+                let kept = if self.pending_prompts.contains_key(&id) { " (its message is kept: start it again to send it)" } else { "" };
+                self.notify(format!("“{name}” was not started: offline{kept}"), true);
                 continue;
             }
             let (slots, focused, focus) = (self.tile_slots.clone(), self.focused_term.clone(), self.focus);
@@ -2711,6 +2848,10 @@ impl App {
         if !self.closing_retry.is_empty() {
             self.retry_closing();
         }
+        if matches!(self.info_check, InfoCheck::Retry { at, .. } if Instant::now() >= at) && self.connected {
+            self.refresh_backend_info();
+        }
+        self.check_restore_cancels(false);
         // Removals the last run kept: once this connection's terminal list is in.
         if self.held_removals.as_ref().is_some_and(|h| h.terms_in) && self.connected && !self.reconnecting && !self.doc_resync {
             self.make_held_removals();
@@ -3142,6 +3283,16 @@ mod connection_tests {
         app.live_doubted.get_mut("s1").unwrap().since -= LIVE_DOUBT;
         app.on_tick();
         assert!(!elsewhere(&app, "s1") && app.node_status(app.doc.node("s1").unwrap()) == Status::Stopped);
+        // The service refuses its start: really open elsewhere, so shown so, with the holder (R3-C-08).
+        app.on_service(ServiceMsg::Error { id: Some("s1".into()), message: "this session is already running in VS Code (Code.exe pid 9): close it there first".into() });
+        assert!(elsewhere(&app, "s1") && app.live_doubted.is_empty());
+        assert_eq!(app.node_status(app.doc.node("s1").unwrap()), Status::External);
+        assert!(app.subtitle(app.doc.node("s1").unwrap()).contains("VS Code"), "{}", app.subtitle(app.doc.node("s1").unwrap()));
+        // Doubted again for the rest of this test.
+        app.doubt_live("s1");
+        app.live_doubted.get_mut("s1").unwrap().since -= LIVE_DOUBT;
+        app.on_tick();
+        assert!(!elsewhere(&app, "s1"));
         // The same summary again (a reconnect's whole list) is no news …
         app.on_service(ServiceMsg::Sessions { full: true, upsert: vec![live("s1"), live("s2")], remove: Vec::new() });
         assert!(!elsewhere(&app, "s1"));
@@ -3307,6 +3458,46 @@ mod connection_tests {
     }
 
     #[test]
+    fn the_backends_facts_are_asked_again_until_they_come_and_after_a_reconnect() {
+        use crate::rpc::{Request, Response};
+        /// Answers `Info` from the second time on.
+        struct Late(std::sync::Mutex<u32>);
+        impl Backend for Late {
+            fn call(&self, request: Request) -> anyhow::Result<Response> {
+                let Request::Info = request else { return Err(anyhow::anyhow!("no {}", request.name())) };
+                let mut calls = self.0.lock().unwrap();
+                *calls += 1;
+                match *calls {
+                    1 => Err(anyhow::anyhow!("busy")),
+                    n => Ok(Response::Info(BackendInfo { home: format!("/h{n}"), ..Default::default() })),
+                }
+            }
+        }
+        let backend = Arc::new(Late(std::sync::Mutex::new(0)));
+        let (conn, _sent) = detached();
+        let (app_tx, events) = unbounded();
+        let mut app = App::new(conn, backend.clone(), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        assert!(app.notice.as_ref().is_some_and(|n| n.text.contains("did not answer")));
+        let InfoCheck::Retry { at, tries: 1 } = app.info_check else { panic!("{:?}", app.info_check) };
+        assert!(at > Instant::now() + INFO_RETRY - Duration::from_secs(1));
+        app.on_tick();
+        assert_eq!(*backend.0.lock().unwrap(), 1, "not before its time");
+        app.info_check = InfoCheck::Retry { at: Instant::now(), tries: 1 };
+        app.on_tick();
+        let event = events.recv_timeout(Duration::from_secs(5)).expect("asked again");
+        app.on_app_event(event);
+        assert_eq!((app.info.home.as_str(), app.info_check), ("/h2", InfoCheck::Idle));
+        // A reconnect (a restarted service) asks once more.
+        let (conn, _sent) = detached();
+        app.on_reconnected(Ok(conn));
+        app.on_reconnected(Err("again".into()));
+        let event = events.recv_timeout(Duration::from_secs(5)).expect("asked after the reconnect");
+        app.on_app_event(event);
+        assert_eq!(app.info.home, "/h3");
+        assert_eq!(*backend.0.lock().unwrap(), 3);
+    }
+
+    #[test]
     fn the_backends_facts_come_from_the_last_run_and_are_asked_again_in_the_background() {
         use crate::rpc::{Request, Response};
         struct Facts(std::sync::Mutex<(BackendInfo, u32)>);
@@ -3397,6 +3588,12 @@ mod connection_tests {
         assert!(app.went_silent(), "nothing for the dead-after time: the watchdog closed it");
         app.conn.wire.bytes_in.fetch_add(40, Ordering::Relaxed);
         assert!(!app.went_silent(), "a heartbeat since: the far side closed it");
+        // A large message still arriving: no whole frame for long, but bytes came (R3-C-07).
+        app.heard.1 -= app.conn_options.dead_after;
+        let liveness = Arc::new(canvas_common::wire::Liveness::standard());
+        liveness.received();
+        app.conn.liveness = Some(liveness);
+        assert!(!app.went_silent(), "a part of a message 0 s ago");
     }
 
     fn edits(sent: &Receiver<ClientMsg>) -> Vec<(u64, Vec<crate::sync::Op>)> {

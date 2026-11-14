@@ -225,6 +225,7 @@ impl App {
         }
         self.bus = snapshot;
         self.needs_draw = true;
+        self.check_restore_cancels(true);
         // A chat asked for during a run opens once the run has ended.
         self.open_waiting_chats();
     }

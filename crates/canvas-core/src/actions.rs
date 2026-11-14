@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::agents::{AgentKind, agent_of, native_id};
-use crate::app::{App, AppEvent, Focus};
+use crate::app::{App, AppEvent, Focus, RESTORE_CANCEL_SETTLE};
 use crate::dialogs::{
     Action, Confirm, FolderBrowser, GitState, Grouping, ImportCopilot, Menu, MenuItem, Modal, NewSession, NsField, Rename, Target,
     TextInput,
@@ -449,12 +449,41 @@ impl App {
     /// asked not to resume it (an older service ignores this and resumes it).
     pub fn cancel_restore(&mut self, id: &str) {
         self.bus_action(serde_json::json!({ "action": "restore", "op": "cancel", "id": id }));
-        // Shown stopped at once; the service's next snapshot says so too.
+        // Shown stopped at once; "will not be resumed" once the service's next
+        // snapshot no longer lists it (an older service ignores the cancel, R3-C-09).
         if let Some(restore) = self.bus.restore.as_mut() {
             restore.resuming.retain(|r| r != id);
         }
+        self.restore_cancels.insert(id.to_owned(), Instant::now());
         let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_else(|| id.to_owned());
-        self.notify(format!("“{name}” will not be resumed."), false);
+        self.notify(format!("“{name}”: asking the service not to resume it…"), false);
+    }
+
+    /// Restore cancels asked for, against what the service says (`snapshot`:
+    /// a bus snapshot just came): one without the box confirms a cancel; one
+    /// that still lists it a moment after the cancel (not one made before
+    /// it), or the box running, means the service cannot cancel (an older
+    /// build: it resumes the box). Unanswered for two minutes, one is forgotten.
+    pub fn check_restore_cancels(&mut self, snapshot: bool) {
+        if self.restore_cancels.is_empty() {
+            return;
+        }
+        let pending: Vec<(String, Instant)> = self.restore_cancels.iter().map(|(id, at)| (id.clone(), *at)).collect();
+        for (id, at) in pending {
+            let name = self.doc.node(&id).map(|n| n.name.clone()).unwrap_or_else(|| id.clone());
+            let listed = self.bus.restore.as_ref().is_some_and(|r| r.is_resuming(&id));
+            let resumed = self.owned_alive(&id);
+            if resumed || (snapshot && listed && at.elapsed() >= RESTORE_CANCEL_SETTLE) {
+                self.restore_cancels.remove(&id);
+                let what = if resumed { "was resumed after all" } else { "is still to be resumed" };
+                self.notify(format!("“{name}” {what}: this service cannot cancel a resume (an older build); stop it once it runs."), true);
+            } else if snapshot && !listed {
+                self.restore_cancels.remove(&id);
+                self.notify(format!("“{name}” will not be resumed."), false);
+            } else if at.elapsed() >= Duration::from_secs(120) {
+                self.restore_cancels.remove(&id);
+            }
+        }
     }
 
     pub fn confirm_stop(&mut self, id: String) {
@@ -1735,6 +1764,23 @@ mod remote_tests {
         let actions: Vec<serde_json::Value> = f.sent.try_iter().filter_map(|m| if let ClientMsg::Bus { json } = m { serde_json::from_str(&json).ok() } else { None }).collect();
         assert_eq!(actions, [serde_json::json!({ "action": "restore", "op": "cancel", "id": "r" })], "R2-C-01");
         assert_ne!(status(&f.app), crate::status::Status::Resuming, "shown stopped at once");
+        assert!(f.app.notice.as_ref().is_some_and(|n| n.text.contains("asking the service")), "not said done before the service says so");
+        // This build's service drops it from its next snapshot: confirmed.
+        let snapshot = |resuming: Vec<String>| serde_json::to_string(&canvas_model::bus::Snapshot { restore: Some(canvas_model::bus::RestoreView { resuming, ..Default::default() }), ..Default::default() }).unwrap();
+        f.app.on_bus(&snapshot(Vec::new()));
+        assert!(f.app.notice.as_ref().is_some_and(|n| n.text == "“Queued” will not be resumed.") && f.app.restore_cancels.is_empty());
+        // An older service ignores the cancel: its snapshot made after it still lists the box (R3-C-09).
+        f.app.on_bus(&snapshot(vec!["r".into()]));
+        f.app.run(Action::Stop { id: "r".into(), force: false });
+        f.app.on_bus(&snapshot(vec!["r".into()]));
+        assert!(f.app.restore_cancels.contains_key("r"), "a snapshot right after the cancel may predate it");
+        *f.app.restore_cancels.get_mut("r").unwrap() -= RESTORE_CANCEL_SETTLE;
+        f.app.on_bus(&snapshot(vec!["r".into()]));
+        assert!(f.app.notice.as_ref().is_some_and(|n| n.error && n.text.contains("cannot cancel a resume")), "{:?}", f.app.notice);
+        // … or it simply resumes it.
+        f.app.run(Action::Stop { id: "r".into(), force: false });
+        f.app.on_service(crate::protocol::ServiceMsg::Terminals(vec![crate::protocol::TermInfo { id: "r".into(), alive: true, ..Default::default() }]));
+        assert!(f.app.notice.as_ref().is_some_and(|n| n.text.contains("was resumed after all")) && f.app.restore_cancels.is_empty());
         // A running box stops as before.
         f.app.run(Action::Stop { id: "t".into(), force: false });
         assert!(f.sent.try_iter().any(|m| matches!(m, ClientMsg::Stop { id, .. } if id == "t")));
