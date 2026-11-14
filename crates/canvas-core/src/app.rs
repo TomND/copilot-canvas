@@ -316,6 +316,9 @@ pub struct App {
     pub last_tracked: Vec<String>,
     pub stats: Option<ServiceStats>,
     pub stats_at: Instant,
+    /// Bytes read on the connection, and when that count last moved: a
+    /// connection that went silent before it ended suspects the tunnel.
+    pub heard: (u64, Instant),
     /// Keeps the terminal and session lists in step with the service's (`resync.rs`).
     pub resync: crate::resync::Resync,
     pub build_mismatch: bool,
@@ -511,6 +514,7 @@ impl App {
             last_tracked: Vec::new(),
             stats: None,
             stats_at: Instant::now() - Duration::from_secs(60),
+            heard: (0, Instant::now()),
             resync: Default::default(),
             last_input_at: HashMap::new(),
             idle_check_at: Instant::now(),
@@ -807,6 +811,14 @@ impl App {
         self.needs_draw = true;
         if self.reconnecting {
             return;
+        }
+        // Silent before it ended (this client's watchdog closed it): the tunnel
+        // is suspect, not the service, which closes what it ends (R2-D-02).
+        let silent = self.went_silent();
+        if let Some(crate::conn::ConnTarget::Server(server)) = &self.target
+            && silent
+        {
+            server.went_silent();
         }
         let Some(target) = self.target.clone() else {
             self.notify("The terminal service disconnected. Restart Atelier to reconnect; your canvas is saved.", true);
@@ -2260,12 +2272,29 @@ impl App {
         }
     }
 
+    /// Notes whether bytes came in since the last look (any change counts: a
+    /// new connection counts from 0).
+    fn note_heard(&mut self) {
+        let bytes = self.conn.wire.bytes_in.load(std::sync::atomic::Ordering::Relaxed);
+        if bytes != self.heard.0 {
+            self.heard = (bytes, Instant::now());
+        }
+    }
+
+    /// Nothing came in for most of the dead-after time (heartbeats come every
+    /// 2 s): the connection went silent rather than being closed.
+    pub fn went_silent(&mut self) -> bool {
+        self.note_heard();
+        self.heard.1.elapsed() >= self.conn_options.dead_after * 2 / 3
+    }
+
     pub fn on_tick(&mut self) {
         // Spinner frame: one step per 80 ms regardless of the housekeeping rate.
         static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
         let frame = self.frozen_tick.unwrap_or_else(|| (START.get_or_init(Instant::now).elapsed().as_millis() / 80) as usize);
         let spun = frame != self.tick;
         self.tick = frame;
+        self.note_heard();
         if self.dirty_at.is_some_and(|t| t.elapsed() >= DOC_FLUSH) {
             self.flush_doc();
         }
@@ -2664,6 +2693,21 @@ mod connection_tests {
 
     fn node(id: &str) -> Node {
         serde_json::from_value(serde_json::json!({ "id": id, "kind": "session", "name": id, "x": 0, "y": 0, "reviewed_ms": 1 })).unwrap()
+    }
+
+    #[test]
+    fn a_connection_that_went_silent_is_told_from_one_that_was_closed() {
+        use std::sync::atomic::Ordering;
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        app.conn.wire.bytes_in.store(500, Ordering::Relaxed);
+        app.on_tick();
+        assert!(!app.went_silent(), "bytes just came");
+        app.heard.1 -= app.conn_options.dead_after;
+        assert!(app.went_silent(), "nothing for the dead-after time: the watchdog closed it");
+        app.conn.wire.bytes_in.fetch_add(40, Ordering::Relaxed);
+        assert!(!app.went_silent(), "a heartbeat since: the far side closed it");
     }
 
     fn edits(sent: &Receiver<ClientMsg>) -> Vec<(u64, Vec<crate::sync::Op>)> {

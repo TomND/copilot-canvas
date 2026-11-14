@@ -265,7 +265,12 @@ copied and emptied when it cannot be renamed at its size limit.
   nothing gets twice in a row (no TCP connection to its port, or not a byte
   back before the handshake's 10 s: the relay is broken) is restarted, and so
   is one whose connections keep closing before a byte comes back for 45 s
-  (the service restarting closes them too, for shorter); but never a child
+  (the service restarting closes them too, for shorter). Closes count as
+  failures instead (two restart it) for a minute after a connection through
+  the child went silent until this client's watchdog closed it (a service
+  that shuts down closes its connections; a lost relay leaves them silent),
+  and while the child's own output said its relay connection was lost or is
+  reconnecting. But a child is never restarted when it is
   younger than 10 s, nor one that carries another connection that is up
   (another window, an upload), and an answer from the service (a refusal
   included) counts as the tunnel working.
