@@ -1056,12 +1056,33 @@ impl Terminal {
         self.forced.load(Ordering::Acquire)
     }
 
+    /// Ends the program now. An agent's stop that ran past its grace ends
+    /// what its natural exit would (R3-B-05): the agent, its own program
+    /// and (Unix) what is in its terminal's session; closing the
+    /// pseudoconsole then ends what is attached to it (Windows). What it
+    /// started with a console of its own or none (a server, a build server
+    /// other sessions use), in a session of its own, or that broke away
+    /// keeps running, whether the agent quit in time or not. A plain
+    /// terminal's whole tree ends. Both by recorded start times: once the
+    /// program exited, its number in other processes' parent field does not
+    /// make them its (R3-B-02).
     pub fn force_kill(&self) {
         self.forced.store(true, Ordering::Release);
         if self.pid != 0 {
-            let _ = canvas_sys::process::kill_tree(self.pid);
-            for (pid, started, _) in self.leftovers() {
-                canvas_sys::process::kill_started(pid, started);
+            if self.copilot {
+                let leftovers = self.leftovers();
+                if self.root_started != 0 {
+                    canvas_sys::process::kill_started(self.pid, self.root_started);
+                }
+                for (pid, started, _) in leftovers {
+                    canvas_sys::process::kill_started(pid, started);
+                }
+            } else {
+                let _ = match self.root_started {
+                    0 if self.alive.load(Ordering::Acquire) => canvas_sys::process::kill_tree(self.pid),
+                    0 => Ok(0),
+                    started => canvas_sys::process::kill_tree_started(self.pid, started),
+                };
             }
         }
         let _ = lock(&self.killer).kill();
@@ -1772,18 +1793,20 @@ fn spawn_waiter(terminal: Arc<Terminal>, mut child: Box<dyn portable_pty::Child 
             std::thread::sleep(Duration::from_millis(150));
             terminal.alive.store(false, Ordering::Release);
             // What an agent left (R2-B-01): its own program ends now; what is
-            // still in its session (Unix) gets a moment to end by itself. On
+            // still in its session (Unix) is hung up (the terminal closes)
+            // and asked to end (SIGTERM: it may save its state), then gets a
+            // moment to end by itself before it is killed (R3-B-07). On
             // Windows closing the pseudoconsole ends what is attached to it.
             let lingering = if terminal.copilot { terminal.end_own_leftovers() } else { Vec::new() };
-            if lingering.is_empty() {
-                terminal.close_pty();
+            terminal.close_pty();
+            for (pid, started) in &lingering {
+                canvas_sys::process::terminate_started(*pid, *started);
             }
             terminal.generation.fetch_add(1, Ordering::AcqRel);
             let _ = pump.try_send(());
             let _ = exited.send(terminal.id.clone());
             if !lingering.is_empty() {
                 end_lingering(lingering, LEFTOVER_GRACE);
-                terminal.close_pty();
             }
             // Nothing more for the program: the writer thread ends, and the
             // engine freezes once the last output is in (S3-06).
@@ -2698,6 +2721,49 @@ mod tests {
             assert!(canvas_sys::process::alive(detached), "what left the terminal outlives it");
             let _ = canvas_sys::process::kill_tree(detached);
         }
+    }
+
+    /// R3-B-07: what stays in an agent's terminal session after it exits is
+    /// asked to end first (it gets SIGTERM, and may save its state), killed
+    /// only after the grace.
+    #[test]
+    #[cfg(unix)]
+    fn what_stays_in_an_agents_session_is_asked_to_end_before_it_is_killed() {
+        let _serial = serial();
+        let marker = std::env::temp_dir().join(format!("cc-term-{}-{}", std::process::id(), now_ms()));
+        let script = format!(
+            r#"sh -c 'trap "" HUP; trap "echo saved > {}; exit 0" TERM; while :; do sleep 0.1; done' & echo "attached $!"; read line"#,
+            marker.display()
+        );
+        let terminal = sh("agent-saves", &script, true);
+        let attached = printed_pids(&terminal, &["attached"])[0];
+        terminal.send_input(&Input::Raw(b"
+".to_vec())).unwrap();
+        wait_exit(&terminal, Duration::from_secs(10));
+        wait_long("the helper saved its state", || marker.exists());
+        wait_long("and ended", || !canvas_sys::process::alive(attached));
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    /// R3-B-05: an agent stopped by force (its grace ran out) leaves what it
+    /// started outside its terminal running, as an agent that quits does;
+    /// what is in its terminal ends.
+    #[test]
+    #[cfg(unix)]
+    fn a_forced_stop_of_an_agent_leaves_what_it_detached() {
+        let _serial = serial();
+        let script = r#"nohup sleep 30 >/dev/null 2>&1 & echo "attached $!"; if command -v setsid >/dev/null; then setsid sleep 30 </dev/null >/dev/null 2>&1 & else perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sleep 30 </dev/null >/dev/null 2>&1 & fi; echo "detached $!"; trap "" INT TERM HUP; while :; do sleep 1; done"#;
+        let terminal = sh("agent-forced", script, true);
+        let pids = printed_pids(&terminal, &["attached", "detached"]);
+        let (attached, detached) = (pids[0], pids[1]);
+        wait_long("the daemon has a session of its own", || canvas_sys::process::session_of(detached) == Some(detached));
+        terminal.stop(true);
+        wait_exit(&terminal, Duration::from_secs(10));
+        assert!(terminal.was_forced());
+        wait_long("what was in its terminal ended", || !canvas_sys::process::alive(attached));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(canvas_sys::process::alive(detached), "what it detached outlives a forced stop");
+        let _ = canvas_sys::process::kill_tree(detached);
     }
 
     /// R2-B-01 (S3-14 narrowed) on Windows: when an agent exits on its own,

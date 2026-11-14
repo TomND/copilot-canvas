@@ -1448,14 +1448,16 @@ and `docs/REMOTE.md`.
   the Cloud PC: pair only your own machines (security notes in
   docs/REMOTE.md). Remote links never execute anything: URLs open at home, the
   Cloud PC's files in VS Code through its tunnel or in a read-only viewer.
-- Stop is graceful (Ctrl+D, then Ctrl+C twice and `/exit`, then the whole process tree after 10 s). The service
+- Stop is graceful (Ctrl+D, then Ctrl+C twice and `/exit`, then by force after 10 s: an agent then ends as if it had quit, below; a plain terminal's whole process tree ends). The service
   sits in a kill-on-close job so nothing is orphaned if it dies. An agent that
   exits (on its own: a crash, `/exit`; or stopped) takes with it what still
   holds its terminal or its session: its own CLI, also one whose launcher is
   gone (it holds the session's in-use lock), and what is still attached to its
   terminal (Windows: closing its console ends those, each getting the
   console's close event first; macOS and Linux: what is still in its session,
-  after 2 s to quit by itself, as an MCP server whose input closed does). What
+  hung up and sent SIGTERM so it may save its state, then killed after 2 s if
+  it has not quit, as an MCP server whose input closed does). The same holds
+  when a stop had to force the agent. What
   it started detached keeps running, as it would outside the canvas: a server
   it started with a console of its own (`Start-Process`, `start`), a VS Code,
   build and cache servers other sessions use (MSBuild nodes, VBCSCompiler,
@@ -1723,8 +1725,12 @@ service starts at login, `atelier service install`.
   pasted line break ends its line (docs/AGENT-PROVIDERS.md#pasting).
 - Stopping a session sends the agent Ctrl+D (Copilot CLI's *Shutdown*; twice),
   then Ctrl+C twice (*press twice to exit*), then types `/exit` and Enter, and
-  ends its process tree after 10 s (`service stop` waits that long for every
-  session); a session the canvas stopped always shows as stopped.
+  ends it by force after 10 s (`service stop` waits that long for every
+  session): the agent, its own CLI and what is still in its terminal, never
+  what it started detached; a session the canvas stopped always shows as
+  stopped. A stop or restart of the service ends only terminals still
+  running, each by the start times it recorded (a process whose parent number
+  happens to be an exited agent's is never taken for its child).
   OpenCode 1.19 sometimes quits its screen but leaves its process running (on a
   busy machine, or while one of its own background requests is pending); the
   canvas ends such a process 3 s after its screen closed.

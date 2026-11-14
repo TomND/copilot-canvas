@@ -98,8 +98,9 @@ pub fn kill_tree(root: u32) -> io::Result<usize> {
     while index < order.len() {
         let parent = order[index];
         for &(pid, ppid) in &pairs {
-            // A recycled parent PID could otherwise adopt unrelated processes.
-            if ppid == parent && pid != parent && !order.contains(&pid) && started_after(pid, parent) {
+            // A recycled parent PID could otherwise adopt unrelated processes;
+            // this process is never in the tree it ends.
+            if ppid == parent && pid != parent && pid != std::process::id() && !order.contains(&pid) && started_after(pid, parent) {
                 order.push(pid);
             }
         }
@@ -116,10 +117,11 @@ pub fn kill_tree(root: u32) -> io::Result<usize> {
     Ok(killed)
 }
 
+/// Whether `child` started no earlier than `parent`; a parent that is gone
+/// cannot tell (its number may be the parent field of an older orphan: R3-B-02).
 fn started_after(child: u32, parent: u32) -> bool {
     match (process_start_ms(child), process_start_ms(parent)) {
         (Some(c), Some(p)) => c >= p,
-        (Some(_), None) => true,
         _ => false,
     }
 }

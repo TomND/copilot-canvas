@@ -1,8 +1,8 @@
 //! Windows: today's `canvas_common::win` helpers, unchanged.
 
 pub use canvas_common::win::{
-    KillOnClose, Usage, alive, contain_descendants, descendants, kill_tree, lock_owner_alive, process_entries, process_pairs, process_start_ms, process_tree,
-    process_usage, raise_priority,
+    KillOnClose, Usage, alive, contain_descendants, descendants, lock_owner_alive, process_entries, process_pairs, process_start_ms, process_tree, process_usage,
+    raise_priority,
 };
 pub use canvas_common::win::{current_user_sid as current_user_id, process_user_sid as process_user_id};
 
@@ -195,6 +195,24 @@ pub fn image_name(pid: u32) -> Option<String> {
     }
 }
 
+/// Terminates `root` and every descendant process (deepest first), while
+/// `root` runs; a root that is gone ends nothing (use [`kill_tree_started`]
+/// with its recorded start).
+pub fn kill_tree(root: u32) -> std::io::Result<usize> {
+    match process_start_ms(root) {
+        Some(started) => kill_tree_started(root, started),
+        None => Ok(0),
+    }
+}
+
+/// Terminates `root` (while it is still the process that started at
+/// `root_started`) and what it started, deepest first, each only while it
+/// is still the same process ([`super::tree_started`], R3-B-02).
+pub fn kill_tree_started(root: u32, root_started: u64) -> std::io::Result<usize> {
+    let members = super::tree_started(root, root_started, &process_pairs(), process_start_ms, std::process::id());
+    Ok(members.into_iter().rev().filter(|(pid, started)| kill_started(*pid, *started)).count())
+}
+
 /// Kills `pid` alone (not its descendants) while it still has the start
 /// time `started`; `false` when it is gone or another process now.
 pub fn kill_started(pid: u32, started: u64) -> bool {
@@ -221,6 +239,12 @@ pub fn kill_started(pid: u32, started: u64) -> bool {
         CloseHandle(process);
         killed
     }
+}
+
+/// Ends `pid` while it still has the start time `started` (Windows has no
+/// request to end a process: [`kill_started`]).
+pub fn terminate_started(pid: u32, started: u64) -> bool {
+    kill_started(pid, started)
 }
 
 /// The command line of `pid` is not read on Windows (process names suffice there).

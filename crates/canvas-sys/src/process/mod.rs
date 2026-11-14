@@ -89,9 +89,66 @@ pub fn leftovers(root: u32, root_started: u64, program: Option<&str>, found: &[L
         .collect()
 }
 
+/// What a tree kill of `root` ends (R3-B-02): `root` while it is still the
+/// process that started at `root_started`, and its descendants by parent
+/// links, each started no earlier than its parent; the root's own children
+/// are judged by its recorded start even once it exited (a dead root's
+/// number may be the parent field of older processes it never started, an
+/// orphan of an earlier process with that number). Never `me`. `rows`:
+/// (pid, parent pid); `start`: a process's start time while it runs.
+/// Answers (pid, start time), parents before their children.
+pub fn tree_started(root: u32, root_started: u64, rows: &[(u32, u32)], start: impl Fn(u32) -> Option<u64>, me: u32) -> Vec<(u32, u64)> {
+    let mut members: Vec<(u32, u64)> = vec![(root, root_started)];
+    let mut index = 0;
+    while index < members.len() {
+        let (parent, parent_started) = members[index];
+        for &(pid, ppid) in rows {
+            if ppid != parent || pid == parent || pid == 0 || pid == me || members.iter().any(|(member, _)| *member == pid) {
+                continue;
+            }
+            if let Some(started) = start(pid).filter(|started| *started >= parent_started) {
+                members.push((pid, started));
+            }
+        }
+        index += 1;
+    }
+    if root == 0 || root == me || start(root) != Some(root_started) {
+        members.remove(0);
+    }
+    members
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R3-B-02: a dead root's number in an older orphan's parent field does
+    /// not make the orphan (or this process) part of its tree.
+    #[test]
+    fn a_tree_kill_takes_only_what_the_root_started() {
+        let starts: std::collections::HashMap<u32, u64> = [(20, 500), (21, 510), (30, 1_200), (31, 1_300), (32, 1_100), (40, 1_250)].into();
+        let start = |pid: u32| starts.get(&pid).copied();
+        let rows = [
+            // An orphan older than the root (its parent, once pid 10, exited before the agent started) and its child.
+            (20, 10),
+            (21, 20),
+            // The agent's children, started after it.
+            (30, 10),
+            (31, 30),
+            // A child of 30 older than 30 (30's number had another owner): not taken.
+            (32, 30),
+            // This process, as a child of the root: never.
+            (40, 10),
+        ];
+        // The root (10, started at 1000) exited: its own children only, by its recorded start.
+        assert_eq!(tree_started(10, 1_000, &rows, start, 40), [(30, 1_200), (31, 1_300)]);
+        // While it runs it comes first.
+        let alive = |pid: u32| if pid == 10 { Some(1_000) } else { start(pid) };
+        assert_eq!(tree_started(10, 1_000, &rows, alive, 40), [(10, 1_000), (30, 1_200), (31, 1_300)]);
+        // Its number now belongs to another process (started later): that one is not the root.
+        let reused = |pid: u32| if pid == 10 { Some(5_000) } else { start(pid) };
+        assert_eq!(tree_started(10, 1_000, &rows, reused, 40), [(30, 1_200), (31, 1_300)]);
+    }
 
     /// (pid, parent, started, name, attached)
     fn found(rows: &[(u32, u32, u64, &str, bool)]) -> Vec<Leftover> {

@@ -38,11 +38,6 @@ fn signallable(pid: u32) -> bool {
     pid > 1 && pid <= i32::MAX as u32 && pid != std::process::id()
 }
 
-fn signal(pid: u32, signal: i32) -> bool {
-    // SAFETY: plain kill(2) on a checked pid.
-    signallable(pid) && unsafe { libc::kill(pid as i32, signal) } == 0
-}
-
 /// `root` and its descendants by parent links (children started after their
 /// parent), breadth first.
 fn tree(root: u32) -> Vec<u32> {
@@ -55,19 +50,27 @@ fn tree(root: u32) -> Vec<u32> {
 
 /// Kills `root` and every descendant process (deepest first), then whatever
 /// is left of `root`'s process group when `root` leads one (its terminal's
-/// session: processes that re-parented away stay in it).
+/// session: processes that re-parented away stay in it). A root that is
+/// gone ends nothing (use [`kill_tree_started`] with its recorded start).
 pub fn kill_tree(root: u32) -> io::Result<usize> {
+    match process_start_ms(root) {
+        Some(started) => kill_tree_started(root, started),
+        None => Ok(0),
+    }
+}
+
+/// [`kill_tree`] for the process that started at `root_started`: once it is
+/// gone (its number may be another process's now) only what it started
+/// ends, each only while it is still the same process (R3-B-02).
+pub fn kill_tree_started(root: u32, root_started: u64) -> io::Result<usize> {
     if !signallable(root) {
         return Ok(0);
     }
+    let root_alive = process_start_ms(root) == Some(root_started);
     // SAFETY: getpgid on a checked pid.
-    let leads_group = unsafe { libc::getpgid(root as i32) } == root as i32;
-    let mut killed = 0;
-    for pid in tree(root).into_iter().rev() {
-        if signal(pid, libc::SIGKILL) {
-            killed += 1;
-        }
-    }
+    let leads_group = root_alive && unsafe { libc::getpgid(root as i32) } == root as i32;
+    let members = super::tree_started(root, root_started, &process_pairs(), process_start_ms, std::process::id());
+    let killed = members.into_iter().rev().filter(|(pid, started)| signallable(*pid) && kill_started(*pid, *started)).count();
     if leads_group && root as i32 != unsafe { libc::getpgrp() } {
         // SAFETY: a process group other than ours.
         unsafe { libc::killpg(root as i32, libc::SIGKILL) };
@@ -93,6 +96,12 @@ fn signal_started(pid: u32, started: u64, signal: i32) -> io::Result<bool> {
 /// time `started`; `false` when it is gone or another process now.
 pub fn kill_started(pid: u32, started: u64) -> bool {
     signal_started(pid, started, libc::SIGKILL).unwrap_or(false)
+}
+
+/// Asks `pid` to end (SIGTERM: it may save its state) while it still has
+/// the start time `started`; `false` when it is gone or another process now.
+pub fn terminate_started(pid: u32, started: u64) -> bool {
+    signal_started(pid, started, libc::SIGTERM).unwrap_or(false)
 }
 
 /// The session `pid` belongs to. A terminal's processes stay in its
@@ -287,11 +296,11 @@ pub fn process_tree(root: u32, children: &std::collections::HashMap<u32, Vec<u32
     found
 }
 
-/// Whether `child` started no earlier than `parent` (unknown parent: yes).
+/// Whether `child` started no earlier than `parent`; a parent that is gone
+/// cannot tell (its number may be another process's now: R3-B-02).
 pub fn started_after(child: u32, parent: u32) -> bool {
     match (process_start_ms(child), process_start_ms(parent)) {
         (Some(c), Some(p)) => c >= p,
-        (Some(_), None) => true,
         _ => false,
     }
 }
