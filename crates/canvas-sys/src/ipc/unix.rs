@@ -239,6 +239,12 @@ mod tests {
         closer.close();
         assert_eq!(blocked.join().unwrap(), 0);
         drop(server);
+        // A process another test forks at this moment holds the lock file's
+        // descriptor until it execs (close-on-exec): give it that moment.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while is_served(&name) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(!is_served(&name), "the server is gone (its lock file stays)");
         // A stale lock file and no server: binding works again.
         drop(PipeServer::bind(&name).unwrap());
