@@ -89,6 +89,25 @@ fn signal_started(pid: u32, started: u64, signal: i32) -> io::Result<bool> {
     if error.raw_os_error() == Some(libc::ESRCH) { Ok(false) } else { Err(error) }
 }
 
+/// Kills `pid` alone (not its descendants) while it still has the start
+/// time `started`; `false` when it is gone or another process now.
+pub fn kill_started(pid: u32, started: u64) -> bool {
+    signal_started(pid, started, libc::SIGKILL).unwrap_or(false)
+}
+
+/// The session `pid` belongs to. A terminal's processes stay in its
+/// session (`portable-pty` makes its first process the session's leader,
+/// so the session id is that process's pid) until they start one of their
+/// own (`setsid`: a daemon, or a terminal of their own).
+pub fn console_of(pid: u32) -> Option<u32> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return None;
+    }
+    // SAFETY: getsid on a checked pid.
+    let session = unsafe { libc::getsid(pid as i32) };
+    (session > 0).then_some(session as u32)
+}
+
 /// `root` (when it still has the start time `started`) and its descendants,
 /// breadth first, each with its start time.
 fn started_tree(root: u32, started: u64) -> Vec<(u32, u64)> {
@@ -338,6 +357,29 @@ mod tests {
         }
         assert!(below.iter().all(|&pid| !alive(pid)), "grandchildren are gone");
         assert_eq!(kill_tree(0).unwrap(), 0, "pid 0 (our own group) is never signalled");
+    }
+
+    /// R2-B-01's facts: a child stays in its parent's session until it
+    /// starts one of its own; a process is killed only while it is the one
+    /// that was seen (its start time), never its descendants.
+    #[test]
+    fn sessions_tell_what_left_a_terminal_and_kills_name_one_process() {
+        use std::os::unix::process::CommandExt as _;
+        let me = std::process::id();
+        let mut stays = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        // SAFETY: setsid is async-signal-safe.
+        let mut leaves = unsafe { std::process::Command::new("/bin/sleep").arg("30").pre_exec(|| if libc::setsid() < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }).spawn().unwrap() };
+        assert_eq!(console_of(stays.id()), console_of(me), "a child stays in the session");
+        assert_eq!(console_of(leaves.id()), Some(leaves.id()), "a daemon leads a session of its own");
+        assert_eq!(console_of(0), None);
+        let started = process_start_ms(stays.id()).unwrap();
+        assert!(!kill_started(stays.id(), started + 1), "not another process of that pid");
+        assert!(alive(stays.id()));
+        assert!(kill_started(stays.id(), started));
+        stays.wait().unwrap();
+        assert!(!kill_started(stays.id(), started), "gone");
+        leaves.kill().unwrap();
+        leaves.wait().unwrap();
     }
 
     #[test]

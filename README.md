@@ -1437,10 +1437,17 @@ and `docs/REMOTE.md`.
   Cloud PC's files in VS Code through its tunnel or in a read-only viewer.
 - Stop is graceful (Ctrl+D, then Ctrl+C twice and `/exit`, then the whole process tree after 10 s). The service
   sits in a kill-on-close job so nothing is orphaned if it dies. An agent that
-  exits on its own (a crash, `/exit`) takes what it left running with it, as a
-  stop does: MCP servers and nested sessions (which hold their session's
-  in-use lock) do not outlive it (Windows: each agent has a kill-on-close job
-  of its own; macOS and Linux: its descendants seen with their start times).
+  exits (on its own: a crash, `/exit`; or stopped) takes with it what still
+  holds its terminal or its session: its own CLI, also one whose launcher is
+  gone (it holds the session's in-use lock), and what is still attached to its
+  terminal (its console on Windows, its session on macOS and Linux), which
+  gets 2 s to quit by itself first (an MCP server whose input closed). What
+  it started detached keeps running, as it would outside the canvas: a server
+  it started with a console of its own (`Start-Process`, `start`), a VS Code,
+  build and cache servers other sessions use (MSBuild nodes, VBCSCompiler,
+  sccache, git's fsmonitor), a daemon in a session of its own, or anything
+  that broke away from its job (Windows: each agent's processes are followed
+  by a job of its own, which ends nothing when it closes).
   An exited terminal keeps its last screen and scrollback as rows you can
   still scroll; its emulator and threads are freed at once.
 - **Idle auto-stop** (*Settings › Performance › Stop idle sessions*: never /

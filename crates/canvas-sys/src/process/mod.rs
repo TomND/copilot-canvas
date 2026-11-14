@@ -39,9 +39,95 @@ pub enum Class {
     Background,
 }
 
+/// A process an agent's terminal started, as [`leftovers`] judges it once
+/// the agent exits or is stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Leftover {
+    pub pid: u32,
+    pub parent: u32,
+    /// Its start time: it is ended only while it is still this process.
+    pub started: u64,
+    /// Lowercase executable name, as [`process_entries`] gives it.
+    pub name: String,
+    /// Still attached to the agent's terminal: its console (Windows) or its
+    /// session (Unix), as [`console_of`] tells.
+    pub attached: bool,
+}
+
+/// What ends with an agent (R2-B-01), from what its terminal started
+/// (`found`): the processes still attached to its terminal (they would keep
+/// it open), and the agent's own program (`program`: processes running the
+/// root's executable, each started by the root or by another of them, as a
+/// launcher starts the CLI that holds the session's lock), whatever their
+/// console. Everything else is left running as it was before the job of
+/// S3-14: what got a console of its own or none (a server started with
+/// `Start-Process`, a VS Code, MSBuild nodes, a compiler or cache server
+/// other sessions use), what moved to a session of its own (a daemon), and
+/// what broke away. Answers (pid, start time, own program).
+pub fn leftovers(root: u32, root_started: u64, program: Option<&str>, found: &[Leftover]) -> Vec<(u32, u64, bool)> {
+    let mut own: std::collections::HashMap<u32, u64> = std::collections::HashMap::from([(root, root_started)]);
+    if let Some(program) = program {
+        loop {
+            let before = own.len();
+            for process in found {
+                if process.name == program && !own.contains_key(&process.pid) && own.get(&process.parent).is_some_and(|parent| process.started >= *parent) {
+                    own.insert(process.pid, process.started);
+                }
+            }
+            if own.len() == before {
+                break;
+            }
+        }
+    }
+    found
+        .iter()
+        .filter(|p| p.pid != 0 && p.pid != root && p.pid != std::process::id())
+        .filter_map(|p| {
+            let mine = own.get(&p.pid) == Some(&p.started);
+            (p.attached || mine).then_some((p.pid, p.started, mine))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (pid, parent, started, name, attached)
+    fn found(rows: &[(u32, u32, u64, &str, bool)]) -> Vec<Leftover> {
+        rows.iter().map(|&(pid, parent, started, name, attached)| Leftover { pid, parent, started, name: name.into(), attached }).collect()
+    }
+
+    /// R2-B-01: an agent (root 10, `copilot.exe`, gone) leaves what it
+    /// started; only what still holds its terminal or its session ends.
+    #[test]
+    fn an_agent_takes_only_its_own_program_and_what_is_still_attached_to_its_terminal() {
+        let found = found(&[
+            // The CLI the launcher started, in a console of its own: the agent itself (holds the lock).
+            (11, 10, 1_001, "copilot.exe", false),
+            // A worker of that CLI.
+            (12, 11, 1_002, "copilot.exe", false),
+            // An MCP server on the terminal's console.
+            (13, 11, 1_003, "node.exe", true),
+            // A shell the agent ran, then a server it started with Start-Process (a console of its own).
+            (14, 11, 1_004, "pwsh.exe", false),
+            (15, 14, 1_005, "node.exe", false),
+            // A nested `copilot -p` run by that shell: not the agent's own program (a shell is between).
+            (16, 14, 1_006, "copilot.exe", false),
+            // A compiler server and a VS Code without a console: shared or detached.
+            (17, 14, 1_007, "vbcscompiler.exe", false),
+            (18, 1, 1_008, "code.exe", false),
+            // A pid of the root's program started before the root: never its child.
+            (19, 10, 999, "copilot.exe", false),
+        ]);
+        let mut ended = leftovers(10, 1_000, Some("copilot.exe"), &found);
+        ended.sort();
+        assert_eq!(ended, [(11, 1_001, true), (12, 1_002, true), (13, 1_003, false)]);
+        // Without the program rule (Unix: the session says it all), only what is attached.
+        assert_eq!(leftovers(10, 1_000, None, &found), [(13, 1_003, false)]);
+        // Nothing attached, nothing of the program: nothing ends.
+        assert!(leftovers(10, 1_000, Some("opencode.exe"), &found[3..]).is_empty());
+    }
     use std::io::{BufRead, Write};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};

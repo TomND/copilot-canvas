@@ -988,6 +988,13 @@ impl Host {
         )?;
         // The pid stays last: `selftest copilot` parses the number after " pid ".
         log(&self.instance, &format!("launched {id} engine {} pid {}", terminal.engine.name(), terminal.pid));
+        // An agent without its job: its leftovers are found less well (R2-B-03; logged once).
+        if let Some(error) = terminal.take_job_error() {
+            static LOGGED: AtomicBool = AtomicBool::new(false);
+            if !LOGGED.swap(true, Ordering::AcqRel) {
+                log(&self.instance, &format!("an agent's process job could not be made ({error}); what it leaves is found by its console only"));
+            }
+        }
         self.tell_terms(|terms| {
             let info = terminal.info();
             terms.insert(id.to_owned(), terminal);
@@ -2649,6 +2656,12 @@ fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
             applied.clear();
             continue;
         }
+        // An agent's first children may have started before it was in its
+        // job (R2-B-03): put in while it is young (Windows).
+        let now = crate::paths::now_ms();
+        for terminal in terms.iter().filter(|t| t.copilot && now.saturating_sub(t.started_ms) < 10_000) {
+            terminal.adopt_strays();
+        }
         let active = lock(&host.active_input).current(Instant::now()).map(str::to_owned);
         let visible = host.visible();
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -2678,11 +2691,11 @@ fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
 }
 
 /// Remembers every live terminal's descendants (pid and start time) every
-/// 2 s, in memory for `force_kill` and in `<home>/run/terminals-<instance>.json`
-/// for the next service: a service that died cannot end processes that
-/// re-parented away from their terminal's session (an MCP server that called
-/// `setsid`; macOS has no subreaper), so its successor does at start
-/// ([`sweep_orphans`]). Unix only (Windows uses a kill-on-close job).
+/// 2 s in `<home>/run/terminals-<instance>.json` for the next service: a
+/// service that died cannot end processes that re-parented away from their
+/// terminal's session (an MCP server that called `setsid`; macOS has no
+/// subreaper), so its successor does at start ([`sweep_orphans`]), as the
+/// service's job does on Windows. Unix only.
 #[cfg(unix)]
 fn remember_loop(host: Arc<Host>) {
     let path = remembered_path(&host.instance);

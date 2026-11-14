@@ -515,9 +515,13 @@ terminal survives every client, as with ConPTY.
 
 On macOS orphans are re-parented to launchd (no subreaper), so the service
 remembers, every 2 s (the priority loop already walks the trees), each
-terminal's descendants with their start times; `kill_tree` uses that list
-too. That keeps "nothing is orphaned" true for MCP servers that `setsid`
-themselves.
+terminal's descendants with their start times, for a successor service to
+end those a service that died left (`sweep_orphans`). That keeps "nothing is
+orphaned" true for MCP servers that `setsid` themselves. When an agent ends
+while the service runs, what is still in its terminal's session ends with it
+(after 2 s to quit by itself); what started a session of its own (a daemon)
+keeps running, as a process with a console of its own does on Windows
+(R2-B-01).
 
 **Environment.** A service started by launchd or systemd gets a minimal
 `PATH` (no Homebrew, nvm, volta, asdf, mise, `~/.local/bin`) and often no
