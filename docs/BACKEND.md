@@ -588,7 +588,7 @@ nothing until prompted) as idle once the terminal is quiet. Passive runs:
 |---|---|---|
 | bus snapshot (`ServiceMsg::Bus` JSON) | `restore`: `{started_ms, previous_ms, resuming, resumed, interrupted: [{id, why}]}` (absent when nothing ran before) | an older client ignores it (it shows the history's state: no "resuming after restart") |
 | `settings.json` | `restore: false` (absent: on) | an older service ignores it (it restores nothing anyway) |
-| `ClientMsg::Bus` | `{"action": "restore", "op": "cancel", "id"}`: a box waiting for its turn that you stopped is not resumed (one removed from the canvas is cancelled by its `DelNode` edit, no request needed) | an older service ignores the action |
+| `ClientMsg::Bus` | `{"action": "restore", "op": "cancel", "id"}`: a box waiting for its turn that you stopped is not resumed (one removed from the canvas is cancelled by its `DelNode` edit, no request needed); the window says "will not be resumed" only once a snapshot without the box comes (`App::check_restore_cancels`) | an older service ignores the action: its snapshot 3 s later still lists the box, or the box starts, and the window says the service cannot cancel a resume (R3-C-09) |
 
 `canvas_model::status::Status::{Interrupted, Resuming}` are computed on
 clients (not a wire enum); the iPhone maps them to `StatusKind::Stopped` (label

@@ -337,9 +337,7 @@ what it was running, with no window needed:
   restart**; one you start yourself meanwhile is simply left running (a busy
   one still gets its note), and one you remove from the canvas (or stop:
   *Stop session*, `X`, its details' Stop) before its turn is not resumed and
-  leaves the running set (the window says so once the service confirms it;
-  a service of an older build ignores the request, and the window says that
-  instead, so you stop the box once it runs). A session that is live
+  leaves the running set. A session that is live
   elsewhere (often the previous service's program still closing) is checked
   again every 2 s for 30 s, then left alone with who has it (a canvas box, VS
   Code, or another program with its pid); one whose launch is now refused (its
@@ -374,13 +372,6 @@ what it was running, with no window needed:
   broken and still), in the box, the sidebar and its details (which say what
   it was doing and, after a restart, why it was not resumed). While the
   service resumes one it shows **resuming after restart**.
-- **Who starts it**: a window on the service's machine (the TUI or the GUI,
-  not a remote one) whose service went away starts it again (a crash, a
-  killed process), and so does opening one. After `atelier service stop`
-  it does not: the service records that it was stopped on purpose, and an
-  open window shows **Service stopped** with a gold **▶ Start service**
-  toolbar button (and reconnects if something else starts it, such as
-  `atelier service start`).
 
 This is the one exception to "viewing never starts anything": the service
 restores what it was already running. Turn it off with

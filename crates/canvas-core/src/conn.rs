@@ -213,6 +213,19 @@ pub fn clear_stop_record(instance: &Instance) {
     let _ = std::fs::remove_file(stop_record_path(instance));
 }
 
+/// What a client sends (`ClientMsg::Bus`) right before the `Shutdown` of a
+/// restart (⟳ Update service, replacing an older service at start): the
+/// service does not record that stop as one on purpose. The same text as the
+/// service's `canvas_common::stopped::RESTART_ACTION`; an older service
+/// drops it (an unknown bus action).
+pub const RESTART_ACTION: &str = r#"{"action":"service","op":"restarting"}"#;
+
+/// Asks the service to stop for a restart (see [`RESTART_ACTION`]).
+pub fn shutdown_for_restart(tx: &Sender<ClientMsg>) -> Result<()> {
+    tx.send(ClientMsg::Bus { json: RESTART_ACTION.to_owned() }).context("the service connection closed")?;
+    tx.send(ClientMsg::Shutdown).context("the service connection closed")
+}
+
 /// An automatic start refused: the service was stopped on purpose (see
 /// [`stopped_on_purpose`]); the user starts it again (▶ Start service).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1418,6 +1431,11 @@ mod tests {
         assert!(may_start(&instance, &ConnOptions { start: true, ..ConnOptions::default() }).is_ok());
         assert!(!stop_record_path(&instance).exists());
         assert!(may_start(&instance, &automatic).is_ok());
+        // A restart says so first: the service records no stop on purpose for it.
+        let (tx, rx) = bounded(4);
+        shutdown_for_restart(&tx).unwrap();
+        let sent: Vec<ClientMsg> = rx.try_iter().collect();
+        assert!(matches!(&sent[..], [ClientMsg::Bus { json }, ClientMsg::Shutdown] if serde_json::from_str::<serde_json::Value>(json).unwrap() == serde_json::json!({ "action": "service", "op": "restarting" })), "{sent:?}");
         let _ = std::fs::remove_dir_all(home);
     }
 }

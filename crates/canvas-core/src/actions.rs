@@ -635,6 +635,8 @@ impl App {
         let copilot = self.installed_agents.contains(&AgentKind::Copilot);
         self.notify(format!("Restarting the terminal service… {} session(s) will resume.", resume.len()), false);
         self.restarting = Some(resume);
+        // A restart, not a stop on purpose: the service records none (R3-B-01).
+        self.send(ClientMsg::Bus { json: crate::conn::RESTART_ACTION.to_owned() });
         self.send(ClientMsg::Shutdown);
         let (tx, backend) = (self.app_tx.clone(), self.backend.clone());
         std::thread::spawn(move || {
