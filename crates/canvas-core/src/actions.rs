@@ -289,9 +289,10 @@ impl App {
                 let png = platform.clipboard_image_png().map_err(|e| format!("{e:#}"))?;
                 let size = png.len();
                 // A large image (up to 20 MB in one request) goes over a connection
-                // of its own: typing and its echo never wait behind it.
+                // of its own: typing and its echo never wait behind it (and not
+                // over the window's when that cannot be opened, past 1 MB).
                 let bulk = bulk.filter(|_| size > crate::files::PIECE);
-                crate::conn::with_bulk(backend, bulk, |backend| backend.set_clipboard_image(png)).map(|_| size).map_err(|e| format!("{e:#}"))
+                crate::files::over_upload_connection(backend, bulk, size as u64, |backend| backend.set_clipboard_image(png)).map(|_| size).map_err(|e| format!("{e:#}"))
             },
             move |result| {
                 AppEvent::Run(Box::new(move |app: &mut App| match result {
