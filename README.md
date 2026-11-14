@@ -372,6 +372,13 @@ what it was running, with no window needed:
   broken and still), in the box, the sidebar and its details (which say what
   it was doing and, after a restart, why it was not resumed). While the
   service resumes one it shows **resuming after restart**.
+- **Who starts it**: a window on the service's machine (the TUI or the GUI,
+  not a remote one) whose service went away starts it again (a crash, a
+  killed process), and so does opening one. After `atelier service stop`
+  it does not: the service records that it was stopped on purpose, and an
+  open window shows **Service stopped** with a gold **▶ Start service**
+  toolbar button (and reconnects if something else starts it, such as
+  `atelier service start`).
 
 This is the one exception to "viewing never starts anything": the service
 restores what it was already running. Turn it off with

@@ -632,6 +632,7 @@ impl App {
         self.new_service_rx = Some(conn.rx.clone());
         self.conn = conn;
         self.connected = true;
+        self.connected_at = std::time::SystemTime::now();
         // A new service: nothing this client sent the old one holds (S6-07:
         // without this, unchanged tiles were never subscribed again).
         self.reset_service_state();
@@ -943,6 +944,7 @@ impl App {
             }
             Action::DiscardMail(id) => self.bus_action(serde_json::json!({ "action": "discard_mail", "to": id })),
             Action::RestartService => self.restart_service(),
+            Action::StartService => self.start_service(),
             Action::MixedBuilds => {
                 if let Some(service) = self.mixed_builds.clone() {
                     self.notify(crate::app::mixed_builds_notice(crate::paths::build_id(), &service), true);

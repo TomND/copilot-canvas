@@ -239,7 +239,12 @@ copied and emptied when it cannot be renamed at its size limit.
   0.5 s, 1 s, then every 1.5 s (Phase 6: it was 2 s, then every 5 s, which
   missed PLAN §9's "≤ 2 s after the network returns" after outages longer
   than a few seconds; an attempt is one TCP connect). A local service that is
-  gone is started again. Remote clients never restart or upgrade the service:
+  gone is started again, unless it was stopped on purpose since the client
+  connected (`atelier service stop` leaves a record,
+  `conn::stop_record_path`, written before its terminals stop): the banner
+  then says "Service stopped", **▶ Start service** removes the record and the
+  next attempt starts it, and meanwhile attempts keep connecting without
+  starting it (R3-B-01). Remote clients never restart or upgrade the service:
   a protocol mismatch is shown as an error. A service of another build with
   the same protocol is not refused, but mixed builds are unsupported (an older
   client froze resuming a large session against a newer service): the client

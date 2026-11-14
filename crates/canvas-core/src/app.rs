@@ -321,6 +321,11 @@ pub struct App {
     pub conn_options: crate::conn::ConnOptions,
     /// A reconnect is in progress.
     pub reconnecting: bool,
+    /// The local service was stopped on purpose (`atelier service stop`):
+    /// the reconnect does not start it; ▶ Start service does (R3-B-01).
+    pub service_stopped: bool,
+    /// When this connection was made (a stop recorded since is this one's).
+    pub connected_at: std::time::SystemTime,
     /// Connection banner for front ends ("Offline — reconnecting…").
     pub banner: Option<String>,
     /// The first terminal list after a reconnect replaces the known terminals.
@@ -574,6 +579,8 @@ impl App {
             target: None,
             conn_options: crate::conn::ConnOptions::default(),
             reconnecting: false,
+            service_stopped: false,
+            connected_at: std::time::SystemTime::now(),
             banner: None,
             resync_terms: false,
             last_focused_sub: None,
@@ -1091,21 +1098,23 @@ impl App {
         };
         self.reconnecting = true;
         self.banner = Some("Offline — reconnecting…".into());
-        // A local service that is gone for good is started again.
-        let options = crate::conn::ConnOptions { start: true, ..self.conn_options.clone() };
+        // A local service that is gone for good (a crash, a reboot) is started
+        // again, unless it was stopped on purpose since this connection was
+        // made: then only a deliberate start (▶ Start service, `atelier
+        // service start`) brings it back, and this client reconnects to it.
+        let options = crate::conn::ConnOptions { start: true, respect_stop: Some(self.connected_at), ..self.conn_options.clone() };
         let session = self.conn.session.clone();
         let tx = self.app_tx.clone();
         let spawned = std::thread::Builder::new().name("reconnect".into()).spawn(move || {
             // A refusal keeps the client retrying; the banner says why.
-            let mut shown = None;
+            let mut shown = (false, None);
             let result = crate::conn::reconnect(&target, &options, &session, |_, error| {
-                let reason = crate::conn::retry_reason(error);
-                if reason != shown {
-                    shown = reason;
+                let state = (error.is::<crate::conn::StoppedOnPurpose>(), crate::conn::retry_reason(error));
+                if state != shown {
+                    shown = state;
                     let _ = tx.send(AppEvent::Run(Box::new(move |app: &mut App| {
                         if app.reconnecting {
-                            app.banner = Some(reason.map_or_else(|| "Offline — reconnecting…".to_owned(), |why| format!("Offline — reconnecting… ({why})")));
-                            app.needs_draw = true;
+                            app.offline_banner(state.0, state.1);
                         }
                     })));
                 }
@@ -1120,12 +1129,41 @@ impl App {
         }
     }
 
+    /// What the banner says while reconnecting: why it keeps failing, or
+    /// that the service was stopped on purpose (it waits for ▶ Start service).
+    fn offline_banner(&mut self, stopped: bool, reason: Option<&'static str>) {
+        if stopped && !self.service_stopped {
+            self.notify("The terminal service was stopped (atelier service stop), so it is not started again on its own: ▶ Start service in the toolbar starts it.", false);
+        }
+        self.service_stopped = stopped;
+        self.banner = Some(match (stopped, reason) {
+            (true, _) => "Service stopped".to_owned(),
+            (false, Some(why)) => format!("Offline — reconnecting… ({why})"),
+            (false, None) => "Offline — reconnecting…".to_owned(),
+        });
+        self.needs_draw = true;
+    }
+
+    /// ▶ Start service, while the local service was stopped on purpose: its
+    /// record goes, so the reconnect under way starts it (within 1.5 s).
+    pub fn start_service(&mut self) {
+        let instance = match &self.target {
+            Some(crate::conn::ConnTarget::Local(instance) | crate::conn::ConnTarget::Loopback(instance)) => instance.clone(),
+            _ => return,
+        };
+        crate::conn::clear_stop_record(&instance);
+        self.service_stopped = false;
+        self.banner = Some("Offline — starting the service…".into());
+        self.notify("Starting the terminal service…", false);
+    }
+
     /// Switches to a re-established connection. The service starts this client
     /// from scratch, so subscriptions, sizes, tracking and routing are sent
     /// again (full frames follow). Keystrokes the service never confirmed are
     /// reported, never resent.
     pub fn on_reconnected(&mut self, result: Result<Conn, String>) {
         self.reconnecting = false;
+        self.service_stopped = false;
         self.needs_draw = true;
         let conn = match result {
             Ok(conn) => conn,
@@ -1153,6 +1191,7 @@ impl App {
         self.new_service_rx = Some(conn.rx.clone());
         self.conn = conn;
         self.connected = true;
+        self.connected_at = std::time::SystemTime::now();
         self.banner = None;
         self.reset_service_state();
         // The new connection opens the document again (local changes are kept).
@@ -3153,6 +3192,37 @@ mod connection_tests {
         let mut app = app;
         app.save_now();
         assert!(crate::prefs::PrefsFile::new(prefs.clone()).load_unsent().is_none());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_service_stopped_on_purpose_shows_stopped_with_a_start_action() {
+        let home = std::env::temp_dir().join(format!("cc-stopped-{}", uuid::Uuid::new_v4()));
+        let instance = crate::paths::Instance::new(Some("t".into()), Some(home.clone()), Some(home.clone())).unwrap();
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        app.target = Some(crate::conn::ConnTarget::Local(instance.clone()));
+        std::fs::create_dir_all(home.join("run")).unwrap();
+        std::fs::write(crate::conn::stop_record_path(&instance), b"{}").unwrap();
+        // The reconnect found the record (see conn's test): the banner and the toolbar say so.
+        app.connected = false;
+        app.reconnecting = true;
+        app.offline_banner(true, None);
+        assert_eq!(app.banner.as_deref(), Some("Service stopped"));
+        assert!(app.notice.as_ref().is_some_and(|n| n.text.contains("▶ Start service")));
+        let area = ratatui::layout::Rect::new(0, 0, 160, 40);
+        crate::ui::render(&mut app, &mut ratatui::buffer::Buffer::empty(area), area, None);
+        assert!(app.layout.hits.iter().any(|(_, hit)| *hit == Hit::Toolbar(crate::dialogs::Action::StartService)));
+        // ▶ Start service: the record goes, so the reconnect under way starts it.
+        app.run(crate::dialogs::Action::StartService);
+        assert!(!app.service_stopped && !crate::conn::stop_record_path(&instance).exists());
+        assert_eq!(app.banner.as_deref(), Some("Offline — starting the service…"));
+        crate::ui::render(&mut app, &mut ratatui::buffer::Buffer::empty(area), area, None);
+        assert!(!app.layout.hits.iter().any(|(_, hit)| *hit == Hit::Toolbar(crate::dialogs::Action::StartService)));
+        // Any other failure keeps the usual banner.
+        app.offline_banner(false, Some("the service refused this client"));
+        assert_eq!(app.banner.as_deref(), Some("Offline — reconnecting… (the service refused this client)"));
         let _ = std::fs::remove_dir_all(home);
     }
 

@@ -179,6 +179,8 @@ pub enum Action {
     DiscardMail(String),
     UpdateService,
     RestartService,
+    /// Starts the local service again after it was stopped on purpose.
+    StartService,
     /// Says again why mixed builds (this client, a remote service) are unsupported.
     MixedBuilds,
     Help,

@@ -257,7 +257,11 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     if app.demo {
         x = put(buf, x, area.y as i32, "DEMO · native shells", fg(ATTENTION).bg(PANEL), area) + 2;
     }
-    if app.restarting.is_some() {
+    if app.service_stopped {
+        let end = put(buf, x, area.y as i32, " ▶ Start service ", bold(PANEL).bg(ATTENTION), area);
+        app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::StartService)));
+        x = end + 2;
+    } else if app.restarting.is_some() {
         x = put(buf, x, area.y as i32, "⟳ updating service…", bold(ATTENTION).bg(PANEL), area) + 2;
     } else if app.build_mismatch {
         let end = put(buf, x, area.y as i32, " ⟳ Update service ", bold(PANEL).bg(ATTENTION), area);

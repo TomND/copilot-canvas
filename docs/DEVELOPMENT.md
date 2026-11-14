@@ -43,7 +43,11 @@ the canvas document goes through the service (docs/BACKEND.md).
   executable to `<home>/bin/atelier-service-<build id>.exe` (build id:
   the package version and the first 8 bytes of the executable's SHA-256,
   `canvas-common/src/paths.rs:build_id`) and removes older copies that are not
-  in use. So rebuilding never fights a running service for its file. The
+  in use. So rebuilding never fights a running service for its file. A
+  reconnect's start (`ConnOptions::respect_stop`) is refused while the
+  service's stop record (`conn::stop_record_path`) is newer than the
+  connection (`StoppedOnPurpose`); a deliberate start (a client opened from
+  scratch, ▶ Start service) removes the record. The
   service exits after `IDLE_EXIT` (10 minutes, `canvas-host/src/server.rs`)
   with no terminals, no clients and no pending work.
 - **At service start** (`canvas-agents/src/service/mod.rs`, where the threads

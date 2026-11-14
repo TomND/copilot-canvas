@@ -181,11 +181,61 @@ pub struct ConnOptions {
     /// Over TCP, acknowledge what is read (`CAP_ACK`) to a service that
     /// paces by it (false: as an older build; tests).
     pub acks: bool,
+    /// With `start`: an automatic start (a reconnect), refused with
+    /// [`StoppedOnPurpose`] while the service's record says it was stopped
+    /// on purpose at or after this time. `None`: a deliberate start (a client
+    /// opened from scratch, ▶ Start service), which removes that record.
+    pub respect_stop: Option<std::time::SystemTime>,
 }
 
 impl Default for ConnOptions {
     fn default() -> Self {
-        Self { start: false, compress: true, name: "client".into(), heartbeat: wire::HEARTBEAT, dead_after: wire::DEAD_AFTER, rpc: None, caps: 0, acks: true }
+        Self { start: false, compress: true, name: "client".into(), heartbeat: wire::HEARTBEAT, dead_after: wire::DEAD_AFTER, rpc: None, caps: 0, acks: true, respect_stop: None }
+    }
+}
+
+/// Where the local service records that it was stopped on purpose
+/// (`atelier service stop`), as opposed to a crash, `service restart` or
+/// ⟳ Update service; written by the service before it stops its terminals,
+/// so a client that sees its connection end finds it (R3-B-01).
+pub fn stop_record_path(instance: &Instance) -> std::path::PathBuf {
+    instance.home.join("run").join(format!("stopped-{}", instance.name))
+}
+
+/// The service was stopped on purpose at or after `since` (its record is
+/// there and that new): a client does not start it again on its own.
+pub fn stopped_on_purpose(instance: &Instance, since: std::time::SystemTime) -> bool {
+    std::fs::metadata(stop_record_path(instance)).and_then(|m| m.modified()).is_ok_and(|at| at >= since)
+}
+
+/// A deliberate start: the service is no longer "stopped on purpose".
+pub fn clear_stop_record(instance: &Instance) {
+    let _ = std::fs::remove_file(stop_record_path(instance));
+}
+
+/// An automatic start refused: the service was stopped on purpose (see
+/// [`stopped_on_purpose`]); the user starts it again (▶ Start service).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoppedOnPurpose;
+
+impl std::fmt::Display for StoppedOnPurpose {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the terminal service was stopped on purpose (atelier service stop); it is not started again on its own")
+    }
+}
+
+impl std::error::Error for StoppedOnPurpose {}
+
+/// Before starting the service: an automatic start is refused while the
+/// service was stopped on purpose; a deliberate one removes that record.
+fn may_start(instance: &Instance, options: &ConnOptions) -> Result<()> {
+    match options.respect_stop {
+        Some(since) if stopped_on_purpose(instance, since) => Err(anyhow::Error::new(StoppedOnPurpose)),
+        Some(_) => Ok(()),
+        None => {
+            clear_stop_record(instance);
+            Ok(())
+        }
     }
 }
 
@@ -572,6 +622,7 @@ fn open_local(instance: &Instance, options: &ConnOptions, session: &Arc<ClientSe
         Err(error) if !options.start => return Err(error),
         Err(_) => {}
     }
+    may_start(instance, options)?;
     spawn_service(instance)?;
     wait_started(instance, || open_pipe(instance, options, session))
 }
@@ -624,6 +675,7 @@ fn open_loopback(instance: &Instance, options: &ConnOptions, session: &Arc<Clien
     }
     let configured = canvas_common::settings::Settings::load(&instance.home).listen().is_some();
     let env: &[(&str, &str)] = if configured { &[] } else { &[("ATELIER_LISTEN", "127.0.0.1:0")] };
+    may_start(instance, options)?;
     spawn_service_with(instance, env)?;
     wait_started(instance, attempt)
 }
@@ -1316,6 +1368,38 @@ mod tests {
         assert!(is_final(&error) && error.to_string().contains("was revoked"), "{error:#}");
         assert_eq!(reasons, [Some("the service refused this client")], "retried once more, then the proven refusal ended it");
         assert_eq!(attempts.load(Ordering::Relaxed), 3);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_service_stopped_on_purpose_is_not_started_again_by_a_reconnect() {
+        let home = std::env::temp_dir().join(format!("cc-stopped-{}", uuid::Uuid::new_v4()));
+        let instance = Instance::new(Some("t".into()), Some(home.clone()), Some(home.clone())).unwrap();
+        let connected_at = std::time::SystemTime::now() - Duration::from_secs(5);
+        let automatic = ConnOptions { start: true, respect_stop: Some(connected_at), ..ConnOptions::default() };
+        // No record (a crash, a reboot): started again as before.
+        assert!(may_start(&instance, &automatic).is_ok());
+        // `atelier service stop` while this client was connected: refused, and
+        // the reconnect keeps trying (it connects when something else starts it).
+        std::fs::create_dir_all(home.join("run")).unwrap();
+        std::fs::write(stop_record_path(&instance), b"{}").unwrap();
+        let mut seen = Vec::new();
+        let error = reconnect(&ConnTarget::Local(instance.clone()), &automatic, &ClientSession::new(), |_, error| {
+            seen.push(error.is::<StoppedOnPurpose>());
+            seen.len() < 2
+        })
+        .err()
+        .expect("not started");
+        assert!(error.is::<StoppedOnPurpose>() && !is_final(&error), "{error:#}");
+        assert_eq!(seen, [true, true]);
+        assert!(stop_record_path(&instance).exists(), "an automatic start leaves the record");
+        // A record from before this connection (a service started since that never removed it) does not count.
+        let later = ConnOptions { respect_stop: Some(std::time::SystemTime::now() + Duration::from_secs(5)), ..automatic.clone() };
+        assert!(may_start(&instance, &later).is_ok());
+        // A deliberate start (a client opened from scratch, ▶ Start service) removes it.
+        assert!(may_start(&instance, &ConnOptions { start: true, ..ConnOptions::default() }).is_ok());
+        assert!(!stop_record_path(&instance).exists());
+        assert!(may_start(&instance, &automatic).is_ok());
         let _ = std::fs::remove_dir_all(home);
     }
 }
