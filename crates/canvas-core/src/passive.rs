@@ -167,8 +167,8 @@ impl App {
             return;
         }
         let Ok(json) = serde_json::to_string(&self.build_routing()) else { return };
-        if json != self.routing_sent {
-            self.send(ClientMsg::Routing { json: json.clone() });
+        if json != self.routing_sent && self.queue(ClientMsg::Routing { json: json.clone() }) {
+            // Not sent (a full queue): tried again at the next check (R2-D-08).
             self.routing_sent = json;
         }
     }
@@ -647,6 +647,22 @@ mod tests {
         assert_eq!(app.build_routing().notebook_root, Some(custom.display().to_string()));
         assert_eq!(std::path::PathBuf::from(app.suggested_group_folder("g1")), custom.join("Groups").join("Release- v2"));
         assert!(!serde_json::to_string(&Routing::default()).unwrap().contains("notebook_root"), "older services never see it unset");
+    }
+
+    #[test]
+    fn a_routing_that_could_not_be_queued_goes_at_the_next_check() {
+        let (tx, sent) = crossbeam_channel::bounded(1);
+        let (_service, service_rx) = crossbeam_channel::bounded(1);
+        let (app_tx, _app_rx) = crossbeam_channel::unbounded();
+        let mut app = App::new(crate::conn::Conn::detached(tx, service_rx), std::sync::Arc::new(crate::rpc::Offline), crate::sync::Opened::detached(crate::doc::Doc::default()), false, ".".into(), app_tx, None);
+        app.send(ClientMsg::Stats);
+        app.sync_routing();
+        assert!(app.routing_sent.is_empty(), "a full queue: not recorded as sent");
+        let _ = sent.try_recv();
+        app.sync_routing();
+        assert!(matches!(sent.try_recv(), Ok(ClientMsg::Routing { .. })) && !app.routing_sent.is_empty());
+        app.sync_routing();
+        assert!(sent.try_recv().is_err(), "sent once");
     }
 
     #[test]
