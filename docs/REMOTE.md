@@ -319,6 +319,12 @@ copied and emptied when it cannot be renamed at its size limit.
   requests, canvas edits), and every byte read counts as a sign of life, so a
   large answer slower than the 6 s dead-after time no longer ends the
   connection on the client's side.
+- Uploads and clipboard images go over a connection of their own
+  (`conn::Bulk`). When it cannot be opened, at most 1 MB goes over the
+  window's connection instead, and at most 64 KiB while the service paces by
+  this window's acknowledgements (`Conn::acking`): an acknowledgement written
+  behind an upload would wait for all of it, and the service would send
+  nothing else meanwhile (R3-A-06); a larger one fails, saying so.
 
 ## Pairing
 

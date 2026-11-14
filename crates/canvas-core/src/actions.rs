@@ -283,16 +283,17 @@ impl App {
             return self.notify("Offline: input not sent.", true);
         }
         self.notify("Sending the image to the service's clipboard…", false);
-        let (platform, id, bulk) = (self.platform.clone(), id.to_owned(), self.upload_target());
+        let (platform, id, bulk, fallback_max) = (self.platform.clone(), id.to_owned(), self.upload_target(), self.upload_fallback_max());
         self.in_background(
             move |backend| {
                 let png = platform.clipboard_image_png().map_err(|e| format!("{e:#}"))?;
-                let size = png.len();
+                let size = png.len() as u64;
                 // A large image (up to 20 MB in one request) goes over a connection
-                // of its own: typing and its echo never wait behind it (and not
-                // over the window's when that cannot be opened, past 1 MB).
-                let bulk = bulk.filter(|_| size > crate::files::PIECE);
-                crate::files::over_upload_connection(backend, bulk, size as u64, |backend| backend.set_clipboard_image(png)).map(|_| size).map_err(|e| format!("{e:#}"))
+                // of its own: typing and its echo never wait behind it, nor the
+                // acknowledgements the service paces by (R3-A-06); and not over
+                // the window's when that cannot be opened, past `fallback_max`.
+                let bulk = bulk.filter(|_| size > (crate::files::PIECE as u64).min(fallback_max));
+                crate::files::over_upload_connection(backend, bulk, size, fallback_max, |backend| backend.set_clipboard_image(png)).map(|_| size as usize).map_err(|e| format!("{e:#}"))
             },
             move |result| {
                 AppEvent::Run(Box::new(move |app: &mut App| match result {

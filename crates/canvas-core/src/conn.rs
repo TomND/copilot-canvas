@@ -303,6 +303,8 @@ pub struct Conn {
     /// When the last byte came (any read, a part of a message too); `None`
     /// for a detached connection.
     pub liveness: Option<Arc<Liveness>>,
+    /// Acknowledging what is read (`None`: a detached connection).
+    acks: Option<Arc<Acks>>,
 }
 
 impl Conn {
@@ -315,6 +317,14 @@ impl Conn {
     /// replaced from here): the service's build, for the mixed-builds notice.
     pub fn remote_build_differs(&self) -> Option<&str> {
         (self.remote && !self.service_build.is_empty() && self.service_build != build_id()).then_some(self.service_build.as_str())
+    }
+
+    /// The service paces what it sends by this connection's
+    /// acknowledgements (`CAP_ACK`, after its `Caps`): a large message sent
+    /// here holds the acknowledgements behind it, and with them everything
+    /// the service would send (R3-A-06).
+    pub fn acking(&self) -> bool {
+        self.acks.as_ref().is_some_and(|acks| acks.on.load(Ordering::Acquire))
     }
 
     /// Closes the connection: the service forgets this client (its
@@ -346,6 +356,7 @@ impl Conn {
             legacy: false,
             closer: None,
             liveness: None,
+            acks: None,
         }
     }
 }
@@ -920,6 +931,7 @@ fn establish(
         legacy: false,
         closer: Some(closer),
         liveness: Some(liveness),
+        acks: Some(acks),
     })
 }
 
@@ -1291,6 +1303,7 @@ mod tests {
         let (sent, acked) = done_rx.recv_timeout(Duration::from_secs(5)).expect("the acknowledgements reached the service");
         assert_eq!(acked, sent, "everything read after Caps, counted as the service counts it");
         assert!(conn.rx.try_iter().all(|m| !matches!(m, ServiceMsg::Caps { .. })), "Caps is the connection's own");
+        assert!(conn.acking(), "uploads keep off this connection (R3-A-06)");
         // An older service never sends `Caps` (it ignores CAP_ACK): the client never acknowledges.
         let (seen_tx, seen_rx) = bounded::<bool>(1);
         let addr = fake_service(|w| w, move |_, mut reader, mut writer| {
@@ -1307,9 +1320,9 @@ mod tests {
             let _ = seen_tx.send(acked);
         });
         let options = ConnOptions { heartbeat: Duration::from_millis(100), ..ConnOptions::default() };
-        let _conn = open(&ConnTarget::Tcp { addr, remote_id: None, secret: b"secret".to_vec() }, &options, &ClientSession::new()).unwrap();
+        let conn = open(&ConnTarget::Tcp { addr, remote_id: None, secret: b"secret".to_vec() }, &options, &ClientSession::new()).unwrap();
         let acked = seen_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(!acked, "nothing an older service cannot decode");
+        assert!(!acked && !conn.acking(), "nothing an older service cannot decode");
     }
 
     #[test]
