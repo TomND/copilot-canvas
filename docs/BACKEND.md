@@ -707,7 +707,11 @@ most 8 files and 4 MiB in all.
   `Terminals` info per terminal (an info of an earlier run of it never
   replaces a newer one), `TerminalGone`, merged `Sessions` (a full list
   replaces what waits), the newest bus snapshot. At most one frame per tile
-  waits; the pump makes the next once the writer wrote it. Lanes are bounded
+  waits; the pump makes the next once the writer wrote it. A frame too large
+  for one message (over `MAX_FRAME`) goes as several, its rows in halves (the
+  first keeps `full`, the others are diffs on top of it), so the tile is
+  never left stale; a row too large even alone goes blank (logged once).
+  Lanes are bounded
   in messages and bytes: a client that overflows them is dropped and logged
   (`client N fell behind …`); it reconnects and gets everything again. A
   client that acknowledges what it reads (`CAP_ACK`) gets flow control

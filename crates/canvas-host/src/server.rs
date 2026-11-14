@@ -387,6 +387,8 @@ pub struct Host {
     frames: AtomicU64,
     /// When the frame pump last began a pass (ms; for [`Health::pump_ms`]).
     pump_ms: AtomicU64,
+    /// A frame row too large to send was logged (once).
+    frame_too_large_logged: AtomicBool,
     /// Tests: the pump's next pass panics.
     #[cfg(test)]
     pump_panic: AtomicBool,
@@ -684,6 +686,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         bytes: Arc::new(AtomicU64::new(0)),
         frames: AtomicU64::new(0),
         pump_ms: AtomicU64::new(0),
+        frame_too_large_logged: AtomicBool::new(false),
         #[cfg(test)]
         pump_panic: AtomicBool::new(false),
         last_activity: Mutex::new(Instant::now()),
@@ -1923,6 +1926,63 @@ fn answered_at_once(client: &Client, message: &ClientMsg) -> bool {
     }
 }
 
+/// Sends a frame; one too large to encode as one message (over
+/// `MAX_FRAME`: a huge screen of long rows) goes as several, its rows in
+/// halves (the first keeps `full`, the others are diffs on top of it, each
+/// with the links its rows use), so the client gets the whole screen at
+/// once instead of a stale tile (R2-B-05). A single row too large even
+/// alone goes blank (`blanked` is set). Answers the bytes written.
+fn send_frame(writer: &mut FrameWriter, message: &ServiceMsg, blanked: &mut bool) -> std::io::Result<usize> {
+    match writer.send(message) {
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => match frame_halves(message) {
+            Some((first, second)) => Ok(send_frame(writer, &first, blanked)? + send_frame(writer, &second, blanked)?),
+            None => {
+                let Some(blank) = blank_rows(message) else { return Err(error) };
+                *blanked = true;
+                writer.send(&blank)
+            }
+        },
+        sent => sent,
+    }
+}
+
+/// The frame with its rows empty.
+fn blank_rows(message: &ServiceMsg) -> Option<ServiceMsg> {
+    match message {
+        ServiceMsg::Frame8(frame) => Some(ServiceMsg::Frame8(Frame8 { id: frame.id.clone(), changed: frame.changed.iter().map(|(y, _)| (*y, Vec::new())).collect(), links: Vec::new(), ..*frame })),
+        ServiceMsg::Frame(frame) => Some(ServiceMsg::Frame(protocol::Frame { id: frame.id.clone(), changed: frame.changed.iter().map(|(y, _)| (*y, Vec::new())).collect(), ..*frame })),
+        _ => None,
+    }
+}
+
+/// A frame of two or more rows as two frames of half its rows each.
+fn frame_halves(message: &ServiceMsg) -> Option<(ServiceMsg, ServiceMsg)> {
+    match message {
+        ServiceMsg::Frame8(frame) if frame.changed.len() >= 2 => {
+            let mid = frame.changed.len() / 2;
+            let half = |rows: &[(u16, Vec<Run8>)], full: bool| {
+                let mut links = Vec::new();
+                let changed = rows
+                    .iter()
+                    .map(|(y, row)| {
+                        let mut row = row.clone();
+                        relink(&mut row, &frame.links, &mut links);
+                        (*y, row)
+                    })
+                    .collect();
+                ServiceMsg::Frame8(Frame8 { full, changed, links, id: frame.id.clone(), ..*frame })
+            };
+            Some((half(&frame.changed[..mid], frame.full), half(&frame.changed[mid..], false)))
+        }
+        ServiceMsg::Frame(frame) if frame.changed.len() >= 2 => {
+            let mid = frame.changed.len() / 2;
+            let half = |rows: &[(u16, Vec<protocol::Run>)], full: bool| ServiceMsg::Frame(protocol::Frame { id: frame.id.clone(), full, changed: rows.to_vec(), ..*frame });
+            Some((half(&frame.changed[..mid], frame.full), half(&frame.changed[mid..], false)))
+        }
+        _ => None,
+    }
+}
+
 /// Writes queued messages; protocol-8 clients also get a heartbeat every 2 s.
 /// A message that cannot be encoded (too large) is skipped, not fatal. A write
 /// that fails (the connection ended, or the client took nothing until the
@@ -1946,6 +2006,18 @@ fn spawn_writer(host: Weak<Host>, mut writer: FrameWriter, outbox: Arc<Outbox>, 
                     // Flow control counts from the byte after `Caps` (the client does too).
                     let caps = matches!(&message, Outgoing::Message(ServiceMsg::Caps { .. }));
                     let sent = match message {
+                        // A frame too large for one message goes in pieces (R2-B-05).
+                        Outgoing::Message(message) if frame_of.is_some() => {
+                            let mut blanked = false;
+                            let sent = send_frame(&mut writer, &message, &mut blanked);
+                            if blanked
+                                && let Some(host) = host.upgrade()
+                                && !host.frame_too_large_logged.swap(true, Ordering::AcqRel)
+                            {
+                                log(&host.instance, &format!("a frame of terminal {} has a row too large to send; it shows blank until it changes", frame_of.as_deref().unwrap_or_default()));
+                            }
+                            sent
+                        }
                         Outgoing::Message(message) => writer.send(&message),
                         Outgoing::Image { term, image_id, width, height, png } => {
                             let sent = writer.send(&ImageRef { term: &term, image_id, width, height, png: &png });
@@ -1959,7 +2031,7 @@ fn spawn_writer(host: Weak<Host>, mut writer: FrameWriter, outbox: Arc<Outbox>, 
                         Err(_) => {}
                     }
                     if let Some(tile) = frame_of {
-                        // Too large to encode: the client never got it, though
+                        // Not sent at all: the client never got it, though
                         // the tile's diff state counts it. Its next frame is
                         // full instead of a diff against rows it lacks (S3-11).
                         if sent.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::InvalidData)
@@ -3084,6 +3156,40 @@ mod tests {
             }
         }
         assert_eq!(ids, [5, 6]);
+    }
+
+    /// R2-B-05: a frame too large for one message reaches the client whole,
+    /// in pieces (the first full, the rest diffs, each with its own links);
+    /// a row too large even alone goes blank instead of leaving the tile stale.
+    #[test]
+    fn a_frame_too_large_for_one_message_goes_in_pieces() {
+        let links = vec!["https://a.example".to_owned(), "https://b.example".to_owned()];
+        let rows: Vec<(u16, Vec<Run8>)> = (0..40u16).map(|y| (y, vec![Run8 { col: 0, text: format!("{y:02}{}", "x".repeat(900 << 10)), link: 1 + u32::from(y % 2), ..Default::default() }])).collect();
+        let frame = Frame8 { id: "t".into(), cols: 1000, rows: 40, full: true, changed: rows, cursor: Some((1, 2)), cursor_shape: 0, cursor_blink: false, display_offset: 0, history: 3, modes: 0, links: links.clone() };
+        let sink = Shared::default();
+        let mut writer = FrameWriter::new(Box::new(sink.clone()));
+        assert_eq!(writer.send(&ServiceMsg::Frame8(frame.clone())).unwrap_err().kind(), std::io::ErrorKind::InvalidData, "over MAX_FRAME as one message");
+        let mut blanked = false;
+        let written = send_frame(&mut writer, &ServiceMsg::Frame8(frame.clone()), &mut blanked).expect("sent in pieces");
+        assert!(!blanked && written > MAX_FRAME);
+        let bytes = lock(&sink.0).clone();
+        let mut reader = FrameReader::new(Box::new(std::io::Cursor::new(bytes)));
+        let mut pieces = Vec::new();
+        while let Ok(Some(ServiceMsg::Frame8(piece))) = reader.recv::<ServiceMsg>() {
+            pieces.push(piece);
+        }
+        assert!(pieces.len() >= 2, "{} pieces", pieces.len());
+        assert!(pieces[0].full && pieces[1..].iter().all(|p| !p.full), "the first replaces the screen, the others add to it");
+        assert!(pieces.iter().all(|p| (p.cols, p.rows, p.cursor, p.history) == (1000, 40, Some((1, 2)), 3)));
+        let mut got: Vec<(u16, String, String)> = pieces.iter().flat_map(|p| p.changed.iter().map(|(y, row)| (*y, row[0].text[..2].to_owned(), p.links[row[0].link as usize - 1].clone()))).collect();
+        got.sort();
+        let want: Vec<(u16, String, String)> = (0..40u16).map(|y| (y, format!("{y:02}"), links[usize::from(y % 2)].clone())).collect();
+        assert_eq!(got, want, "every row once, each with its link");
+        // One row too large even alone.
+        let huge = Frame8 { full: false, changed: vec![(5, vec![Run8 { text: "y".repeat(MAX_FRAME + 1), ..Default::default() }])], links: Vec::new(), ..frame };
+        let mut blanked = false;
+        send_frame(&mut writer, &ServiceMsg::Frame8(huge), &mut blanked).expect("sent blank");
+        assert!(blanked);
     }
 
     /// A backend with nothing but the host.
