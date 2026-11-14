@@ -329,6 +329,13 @@ pub struct App {
     pub size_states: HashMap<String, crate::sizes::SizeState>,
     /// The terminal this client last claimed the size of (it has the keyboard here).
     pub last_claimed: Option<String>,
+    /// The terminal whose claim this client believes the service still
+    /// holds: only it is claimed again by a size repair (not after another
+    /// client took it, nor after a reconnect, until you act here).
+    pub claim_held: Option<String>,
+    /// The size each shown terminal had when this client last asked for
+    /// another: going back to it is a resize undone, not another client's.
+    pub resized_from: HashMap<String, (u16, u16)>,
     pub last_tracked: Vec<String>,
     pub stats: Option<ServiceStats>,
     pub stats_at: Instant,
@@ -528,6 +535,8 @@ impl App {
             pending_sizes: HashMap::new(),
             size_states: HashMap::new(),
             last_claimed: None,
+            claim_held: None,
+            resized_from: HashMap::new(),
             last_tracked: Vec::new(),
             stats: None,
             stats_at: Instant::now() - Duration::from_secs(60),
@@ -1847,11 +1856,17 @@ impl App {
                         self.platform.bell(&mut self.raw_out);
                     }
                     if info.alive {
-                        self.launching.remove(&info.id);
+                        let launched_here = self.launching.remove(&info.id).is_some();
                         // Started again (here, by another client or the restore):
-                        // its size is sent again, whatever an earlier run had.
+                        // its size is sent again, whatever an earlier run had. It
+                        // is claimed only when this window started it: one the
+                        // phone or the restore started stays theirs (R2-D-04).
                         if !self.owned_alive(&info.id) {
+                            let claimed = self.last_claimed.clone();
                             self.forget_size(&info.id);
+                            if !launched_here {
+                                self.last_claimed = claimed;
+                            }
                             if !self.live_doubted.is_empty() {
                                 self.live_doubted.retain(|_, d| d.box_id != info.id);
                             }

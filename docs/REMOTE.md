@@ -639,17 +639,23 @@ The desktop clients (TUI and GUI, `canvas-core/src/sizes.rs`) also:
 - send a tile's changed size once it has held for 150 ms (a window drag is
   one `Resize`, not one per frame);
 - claim the terminal that gets the keyboard here (a click into its tile,
-  F6, a start) and claim it again when the window comes back to the front
-  (`Claim` only to protocol-8 services; every one since the iPhone client
-  reads it, v0.3.0 included);
+  F6, a start from this window) and claim it again when the window comes
+  back to the front (`Claim` only to protocol-8 services; every one since
+  the iPhone client reads it, v0.3.0 included); nothing else claims: a
+  terminal that comes alive while the keyboard is on its tile (the phone or
+  the restore started it) and a reconnect send the size as a wish only;
 - compare each shown terminal's real size (its frames) with its tile after
   every draw: when the size this client sent has not arrived 1.5 s later
   (a lost message, a resize the host did not finish), the `Resize` (and the
-  `Claim`, for the terminal with the keyboard) goes again, with backoff up
+  `Claim`, while this window's claim of it holds) goes again, with backoff up
   to 30 s; a terminal that had this client's size and then took another was
-  taken by another client, and is left to it (no fight with the phone): its
-  tile says *sized elsewhere: click to fit* until you click into it (so does
-  one still at another size after two repairs, about 4.5 s);
+  taken by another client, and is left to it (no fight with the phone, and
+  no claim from a repair until you act here): its tile says *sized
+  elsewhere: click to fit* until you click into it (so does one still at
+  another size after three repairs, about 10 s; after two it says
+  *resizing…*); a terminal that goes back to the size it had before this
+  client's `Resize` had that resize undone (a refused PTY size) and is
+  repaired, not left;
 - while a terminal is taller than its tile, draw its bottom rows (or the
   rows down to its cursor when that is higher up), so the agent's input box,
   status line and cursor stay visible; selections, clicks and the wheel use
