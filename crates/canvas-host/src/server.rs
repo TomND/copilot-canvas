@@ -2347,7 +2347,18 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
             host.terminal(&id)?.click(button, col, row, mods)?;
             let _ = host.pump.try_send(());
         }
-        ClientMsg::Stop { id, force } => host.stop_terminal(&id, force)?,
+        ClientMsg::Stop { id, force } => {
+            if lock(&host.terms).contains_key(&id) {
+                host.stop_terminal(&id, force)?;
+            } else {
+                // Nothing runs under this id (a launch under way is waited
+                // for before this): a box waiting for its turn in the restore
+                // after a restart is not resumed (R2-C-01; a backend before
+                // that action ignores it).
+                let json = serde_json::json!({ "action": "restore", "op": "cancel", "id": id }).to_string();
+                host.app().message(client, ClientMsg::Bus { json })?;
+            }
+        }
         ClientMsg::Forget { id } => {
             let forgotten = host.tell_terms(|terms| match terms.get(&id).is_some_and(|t| !t.alive.load(Ordering::Acquire)) {
                 true => {
@@ -3264,6 +3275,53 @@ mod tests {
         fn remote_credential(&self, _: &str) -> Credential {
             Credential::Refused
         }
+    }
+
+    /// A backend that records the bus requests it gets.
+    #[derive(Default)]
+    struct BusApp(Mutex<Vec<String>>);
+
+    impl HostApp for BusApp {
+        fn resolve_launch(&self, _: &str, _: LaunchKind, _: &str) -> Result<Resolved> {
+            bail!("no agents here")
+        }
+        fn client_connected(&self, _: &Arc<Client>) {}
+        fn client_disconnected(&self, _: u64) {}
+        fn message(&self, _: &Arc<Client>, message: ClientMsg) -> Result<()> {
+            if let ClientMsg::Bus { json } = message {
+                lock(&self.0).push(json);
+            }
+            Ok(())
+        }
+        fn input_noted(&self, _: &str) {}
+        fn terminals_changed(&self) {}
+        fn has_work(&self) -> bool {
+            false
+        }
+        fn remote_credential(&self, _: &str) -> Credential {
+            Credential::Refused
+        }
+    }
+
+    /// R2-C-01: a Stop of a box with nothing running (one waiting for its
+    /// turn in the restore after a restart) goes to the backend as the
+    /// restore's cancel, not back to the client as "no terminal".
+    #[test]
+    fn a_stop_with_nothing_running_cancels_the_boxs_turn_in_the_restore() {
+        let app = Arc::new(BusApp::default());
+        let made = app.clone();
+        let (instance, addr) = test_service("stop-waiting", move |_| made);
+        let (rx, mut writer, _closer) = test_client(&instance, addr, "stop-client");
+        writer.send(&ClientMsg::Stop { id: "waiting-box".into(), force: false }).unwrap();
+        let started = Instant::now();
+        while lock(&app.0).is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(5), "the backend got the cancel");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let request: serde_json::Value = serde_json::from_str(&lock(&app.0)[0]).unwrap();
+        assert_eq!(request, serde_json::json!({ "action": "restore", "op": "cancel", "id": "waiting-box" }));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!rx.try_iter().any(|m| matches!(m, ServiceMsg::Error { .. })), "no error for a box with nothing to stop");
     }
 
     /// Whether the service closed `stream` within `within` (end of stream or a reset).

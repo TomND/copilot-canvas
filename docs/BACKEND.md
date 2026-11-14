@@ -533,7 +533,11 @@ busy ones first), the next once one has printed and been quiet 2 s (at most
 client started meanwhile (`running_or_launching`) or stopped, VM boxes and
 refused launches; a session live elsewhere (`Provide::is_live`) is tried
 again every 2 s for 30 s, then skipped with its holder (`Provide::holders`:
-a canvas box, VS Code, or a program and its pid) as the reason. A resumed agent that was busy gets its note
+a canvas box, VS Code, or a program and its pid) as the reason. A client's
+`Stop` of a box with nothing running and no launch under way (one waiting
+for its turn) reaches the backend as the bus request `{"action": "restore",
+"op": "cancel", "id"}` instead of a "no terminal" error (`server::dispatch`,
+R2-C-01). A resumed agent that was busy gets its note
 once it has run 6 s and been quiet 2 s: a `Mail` with no sender (typed as
 written, `bus::mail_text`) put first in the mailbox by the bus loop
 (`take_notes`); other mail for it waits until then (`holds`). The bus's
