@@ -1701,8 +1701,26 @@ impl App {
         PathBuf::from(&self.info.automation_db)
     }
 
+    /// Automations show here: their view, an automation's details, or an
+    /// automation box on the visible canvas.
+    pub fn automations_watched(&self) -> bool {
+        if self.side_view == SideView::Automations || matches!(self.right_detail, Some(RightDetail::Automation(_))) {
+            return true;
+        }
+        let canvas = self.layout.canvas;
+        self.space == crate::spaces::Space::Canvas
+            && self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Automation).any(|n| {
+                let (x, y, w, h) = self.node_screen(n);
+                x < canvas.right() as i32 && x + w > canvas.x as i32 && y < canvas.bottom() as i32 && y + h > canvas.y as i32
+            })
+    }
+
     pub fn tick_side(&mut self) {
-        if self.automations_at.elapsed() >= Duration::from_secs(15) && !self.demo {
+        // The service's Task Scheduler is asked every 15 s only while
+        // automations show here, else every 2 minutes (new ones still come
+        // in; every window of every client polled it every 15 s, S8-11).
+        let every = if self.automations_watched() { Duration::from_secs(15) } else { Duration::from_secs(120) };
+        if self.automations_at.elapsed() >= every && !self.demo {
             self.refresh_automations();
         }
         if !self.auto_synced && self.doc.vscode.auto_sync && self.sessions_loaded && !self.demo {
@@ -1759,5 +1777,31 @@ mod glyph_tests {
             let cp = c as u32;
             assert!(!(0x2630..=0x2637).contains(&cp) && !(0x268A..=0x268F).contains(&cp) && !(0x4DC0..=0x4DFF).contains(&cp), "{icon} changed width in Unicode 16");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_scheduler_is_polled_often_only_while_automations_show() {
+        let (tx, _sent) = crossbeam_channel::bounded(64);
+        let (_service, service_rx) = crossbeam_channel::bounded(1);
+        let (app_tx, _app_rx) = crossbeam_channel::unbounded();
+        let auto: Node = serde_json::from_value(serde_json::json!({ "id": "auto-1", "kind": "automation", "name": "Nightly", "x": 0, "y": 0, "automation": "task:nightly" })).unwrap();
+        let doc = crate::doc::Doc { nodes: vec![auto], ..Default::default() };
+        let mut app = App::new(crate::conn::Conn::detached(tx, service_rx), std::sync::Arc::new(crate::rpc::Offline), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
+        app.doc.view.x = 0;
+        app.doc.view.y = 0;
+        app.layout.canvas = ratatui::layout::Rect::new(0, 0, 100, 40);
+        assert!(app.automations_watched(), "its box is on the visible canvas");
+        app.doc.view.x = 500;
+        assert!(!app.automations_watched(), "scrolled away: polled every 2 minutes");
+        app.side_view = SideView::Automations;
+        assert!(app.automations_watched(), "the automations view");
+        app.side_view = SideView::Sessions;
+        app.right_detail = Some(RightDetail::Automation("task:nightly".into()));
+        assert!(app.automations_watched(), "an automation's details");
     }
 }

@@ -61,7 +61,7 @@ the connection dropped while waiting).
 | `ConfigSet { key, value }`, `ConfigUnset { key }` | `Text` | Copilot settings |
 | `CliCommand { args }` | `Texts` (the `copilot` command line) | "Install plugin…" runs it in a canvas terminal (a normal host session) |
 | `RestoreMouse` | `Flag` (changed) | after replacing an old local service |
-| `Automations { dir, tasks }` | `Automations(AutoLoad)`: Copilot's `data.db` plus, when `tasks`, the manifest folder with Task Scheduler state; `dir` = the folder used | Automations view, boxes, refresh every 15 s |
+| `Automations { dir, tasks }` | `Automations(AutoLoad)`: Copilot's `data.db` plus, when `tasks`, the manifest folder with Task Scheduler state; `dir` = the folder used | Automations view, boxes, refresh every 15 s while they show, else every 2 minutes |
 | `AutomationsDir { dir }` | `Text` (folder in use for the canvas setting) | Automations / Settings views |
 | `AutomationSetEnabled { key, enabled }` | `Done` | Space on a Copilot workflow |
 | `TaskSetEnabled { name, manifest, enabled }` | `Done` (manifest first, then the task) | Space / Enable on a manifest task |
