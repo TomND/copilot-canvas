@@ -1956,6 +1956,7 @@ impl App {
     // ---------- service messages ----------
 
     pub fn on_service(&mut self, message: ServiceMsg) {
+        let drawn = !self.needs_draw;
         self.needs_draw = true;
         match message {
             ServiceMsg::Frame(frame) => {
@@ -2099,7 +2100,16 @@ impl App {
                     self.notify(message, true);
                 }
             },
-            ServiceMsg::Stats(stats) => self.on_stats(stats),
+            ServiceMsg::Stats(stats) => {
+                // Every 3 s: the screen changes only when the status bar's figures
+                // (or the terminal list) do, not with every answer (S6-11).
+                let shown = |app: &App| (app.stats.as_ref().map(|s| (s.private_bytes >> 20, s.alive)), app.terms_rev);
+                let before = shown(self);
+                self.on_stats(stats);
+                if drawn && shown(self) == before {
+                    self.needs_draw = false;
+                }
+            }
             ServiceMsg::Subsession { parent, child, name, cwd } => self.link_subsession(&parent, &child, &name, &cwd),
             ServiceMsg::Bus { json } => self.on_bus(&json),
             ServiceMsg::BusEvent { json } => self.on_bus_event(&json),
@@ -3068,6 +3078,22 @@ mod connection_tests {
         assert_eq!((app.info.clone(), app.installed_agents.clone()), (now.clone(), now.installed.clone()));
         assert_eq!(crate::prefs::PrefsFile::new(prefs.clone()).load_info(), Some(now), "kept for the next start");
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn the_services_figures_redraw_only_when_they_change() {
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        let stats = |mb: u64, alive: u32| ServiceMsg::Stats(ServiceStats { private_bytes: mb << 20, alive, terminals: alive, ..Default::default() });
+        app.resync_terms = false;
+        app.on_service(stats(100, 0));
+        assert!(app.needs_draw, "first figures");
+        app.needs_draw = false;
+        app.on_service(stats(100, 0));
+        assert!(!app.needs_draw, "the same figures: no redraw every 3 s (S6-11)");
+        app.on_service(stats(140, 0));
+        assert!(app.needs_draw, "the status bar changes");
     }
 
     #[test]
