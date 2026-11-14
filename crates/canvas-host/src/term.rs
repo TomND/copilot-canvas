@@ -1159,6 +1159,20 @@ impl Terminal {
         rest
     }
 
+    /// Whether `pid` is one of the processes this terminal's program
+    /// started (Windows: a member of its job; Unix: in its session).
+    pub fn started_it(&self, pid: u32) -> bool {
+        if pid == 0 || self.pid == 0 || pid == std::process::id() {
+            return false;
+        }
+        #[cfg(windows)]
+        return lock(&self.job).as_ref().is_some_and(|job| job.pids().contains(&pid));
+        #[cfg(unix)]
+        return canvas_sys::process::session_of(pid) == Some(self.pid);
+        #[cfg(not(any(windows, unix)))]
+        false
+    }
+
     /// Puts an agent's processes started before it was in its job there
     /// (R2-B-03; Windows, while it is young). Answers how many.
     pub fn adopt_strays(&self) -> usize {
@@ -2737,6 +2751,8 @@ mod tests {
         );
         let terminal = sh("agent-saves", &script, true);
         let attached = printed_pids(&terminal, &["attached"])[0];
+        // R3-B-06: what the agent started is told from what it did not.
+        assert!(terminal.started_it(attached) && !terminal.started_it(std::process::id()));
         terminal.send_input(&Input::Raw(b"
 ".to_vec())).unwrap();
         wait_exit(&terminal, Duration::from_secs(10));

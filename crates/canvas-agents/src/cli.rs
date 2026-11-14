@@ -279,8 +279,11 @@ pub fn install_cli(home: &Path) -> Result<std::path::PathBuf> {
     let current = std::env::current_exe()?;
     // Size and time, not whole contents: the service starts before its first
     // client is served, and reading two large executables delayed it (S4-20).
-    let same = same_file_stamp(&target, &current);
-    if !same {
+    // And the build the copy was made from (`atelier.build`, this build's id
+    // is known already): two builds of one size and time (PE files are
+    // padded, CI builds seconds apart) are told apart (R3-B-09).
+    let build = dir.join("atelier.build");
+    if !installed_is_current(&target, &current, &build, crate::paths::build_id()) {
         let temp = dir.join(format!("atelier.{}.tmp", std::process::id()));
         std::fs::copy(&current, &temp)?;
         // The copy carries the source's time: the next start knows it is the same.
@@ -288,12 +291,20 @@ pub fn install_cli(home: &Path) -> Result<std::path::PathBuf> {
             let _ = std::fs::File::options().write(true).open(&temp).and_then(|f| f.set_modified(modified));
         }
         canvas_sys::fs::strip_quarantine(&temp);
-        if std::fs::rename(&temp, &target).is_err() {
+        if std::fs::rename(&temp, &target).is_ok() {
+            let _ = std::fs::write(&build, crate::paths::build_id());
+        } else {
             let _ = std::fs::remove_file(&temp);
         }
     }
     install_alias(&dir, &target);
     Ok(dir)
+}
+
+/// Whether `target` is a copy of `current` made from build `id` (the size
+/// and time, and the build id `build` says it was made from).
+fn installed_is_current(target: &Path, current: &Path, build: &Path, id: &str) -> bool {
+    same_file_stamp(target, current) && std::fs::read_to_string(build).is_ok_and(|b| b.trim() == id)
 }
 
 /// Two files of the same size and modification time (an installed copy of
@@ -665,6 +676,28 @@ the user has not approved when approval is on.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R3-B-09: an installed CLI of the same size and time as this build,
+    /// copied from another build, is not taken for this one.
+    #[test]
+    fn the_installed_cli_is_told_by_its_build_not_only_its_size_and_time() {
+        let dir = std::env::temp_dir().join(format!("cc-cli-build-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (target, current, build) = (dir.join("atelier.exe"), dir.join("new.exe"), dir.join("atelier.build"));
+        std::fs::write(&target, b"old build, 16 B").unwrap();
+        std::fs::write(&current, b"new build, 16 B").unwrap();
+        let time = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+        for file in [&target, &current] {
+            std::fs::File::options().write(true).open(file).unwrap().set_modified(time).unwrap();
+        }
+        assert!(same_file_stamp(&target, &current), "the same size and time");
+        assert!(!installed_is_current(&target, &current, &build, "0.3.0-new"), "no build recorded: copied");
+        std::fs::write(&build, "0.3.0-old").unwrap();
+        assert!(!installed_is_current(&target, &current, &build, "0.3.0-new"), "another build: copied");
+        std::fs::write(&build, "0.3.0-new").unwrap();
+        assert!(installed_is_current(&target, &current, &build, "0.3.0-new"), "this build: kept");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn emit_writes_an_inbox_event_the_service_can_read() {

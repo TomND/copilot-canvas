@@ -49,7 +49,11 @@ the canvas document goes through the service (docs/BACKEND.md).
 - **At service start** (`canvas-agents/src/service/mod.rs`, where the threads
   are spawned) it writes the canvas plugin with the skills to `<home>/plugin`
   (`cli.rs:write_plugin`) and copies itself to `<home>/cli/atelier.exe`
-  (`cli.rs:install_cli`), which is on the `PATH` of the sessions it launches.
+  (`cli.rs:install_cli`), which is on the `PATH` of the sessions it launches;
+  the copy is kept while its size, time and the build id in
+  `<home>/cli/atelier.build` match this build (R3-B-09). A group's skill
+  folders are walked for their stamp at most every 2 s, so launches in a
+  burst share one walk (R3-B-08).
 - **An older service.** A local client compares the service's build and
   protocol with its own (`canvas-tui/src/lib.rs`, `canvas-gui/src/main.rs:
   real_main`): an older service with no live terminals is restarted, one

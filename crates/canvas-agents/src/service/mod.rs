@@ -188,6 +188,32 @@ fn skills_stamp(dirs: &[String]) -> u64 {
     hasher.finish()
 }
 
+/// How long a skills stamp is reused: launches in a burst (the restore, a
+/// window resuming several boxes) walk a group's folders once (R3-B-08).
+const STAMP_FRESH: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Skills stamps by folder set, with when each was walked.
+type Stamps = Mutex<HashMap<Vec<String>, (u64, std::time::Instant)>>;
+
+/// [`skills_stamp`], walked at most every [`STAMP_FRESH`] per folder set.
+fn recent_skills_stamp(dirs: &[String], now: std::time::Instant) -> u64 {
+    static STAMPS: std::sync::OnceLock<Stamps> = std::sync::OnceLock::new();
+    let stamps = STAMPS.get_or_init(Mutex::default);
+    if let Some((stamp, at)) = lock(stamps).get(dirs)
+        && now.saturating_duration_since(*at) < STAMP_FRESH
+    {
+        return *stamp;
+    }
+    // Walked without the lock: launches of other groups do not wait for it.
+    let stamp = skills_stamp(dirs);
+    let mut stamps = lock(stamps);
+    if stamps.len() >= 64 {
+        stamps.retain(|_, (_, at)| now.saturating_duration_since(*at) < STAMP_FRESH);
+    }
+    stamps.insert(dirs.to_vec(), (stamp, now));
+    stamp
+}
+
 /// A group skill plugin built for an earlier launch, reused while its
 /// inputs are the same and its folders unchanged (S8-03: every launch and
 /// resume scanned and copied every skill again).
@@ -737,7 +763,7 @@ impl Agents {
         let mut names: Vec<&String> = native.iter().collect();
         names.sort();
         let key = format!("{}\u{1f}{}\u{1f}{}", skills.group, skills.dirs.join("\u{1e}"), names.iter().map(|n| n.as_str()).collect::<Vec<_>>().join("\u{1e}"));
-        let stamp = skills_stamp(&skills.dirs);
+        let stamp = recent_skills_stamp(&skills.dirs, std::time::Instant::now());
         if let Some(made) = take_cached_plugin(&self.group_plugins, &self.skill_cache, &key, stamp, id) {
             return (made.dir.clone(), group_skill_line(id, skills, &made, ", unchanged since an earlier launch"));
         }
@@ -1031,6 +1057,20 @@ impl HostApp for Agents {
         }
         let kind = lock(&self.agent_terms).remove(id);
         if let Some(kind) = kind {
+            // What still holds the box's session that its terminal started
+            // (a CLI under another name than the agent's, in a console of its
+            // own) ends with it too, or the box shows open elsewhere (R3-B-06).
+            let terminal = lock(&self.terms).get(id).cloned();
+            if let Some(terminal) = terminal {
+                for pid in kind.provider().holders(&self.native_of(id)) {
+                    if terminal.started_it(pid)
+                        && let Some(started) = canvas_sys::process::process_start_ms(pid)
+                        && canvas_sys::process::kill_started(pid, started)
+                    {
+                        log(&self.instance, &format!("terminal {id}: ended process {pid}, which its agent started and which still held its session"));
+                    }
+                }
+            }
             kind.provider().terminal_exited(id, &self.instance.home);
         }
         // Its copy of the group's skill folders, unless a relaunch (prepared
@@ -2122,6 +2162,9 @@ mod tests {
         let dirs = vec![root.join("team").display().to_string()];
         let first = skills_stamp(&dirs);
         assert_eq!(skills_stamp(&dirs), first, "unchanged: the plugin built before is reused");
+        // Launches in a burst share one walk (R3-B-08); a later one walks again.
+        let t = std::time::Instant::now();
+        assert_eq!(recent_skills_stamp(&dirs, t), first);
         // A folder's own time moving (Windows brings it up to date lazily) changes nothing.
         #[cfg(unix)]
         {
@@ -2133,6 +2176,8 @@ mod tests {
         std::fs::write(skill.join("scripts").join("run.sh"), "echo 22").unwrap();
         let second = skills_stamp(&dirs);
         assert_ne!(second, first);
+        assert_eq!(recent_skills_stamp(&dirs, t + std::time::Duration::from_millis(500)), first, "within the burst: the walk before is reused");
+        assert_eq!(recent_skills_stamp(&dirs, t + STAMP_FRESH), second, "later: walked again");
         // A file added (or a folder): built again.
         std::fs::create_dir_all(skill.join("assets")).unwrap();
         assert_ne!(skills_stamp(&dirs), second);

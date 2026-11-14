@@ -1464,7 +1464,9 @@ and `docs/REMOTE.md`.
   build and cache servers other sessions use (MSBuild nodes, VBCSCompiler,
   sccache, git's fsmonitor), a daemon in a session of its own, or anything
   that broke away from its job (Windows: each agent's processes are followed
-  by a job of its own, which ends nothing when it closes).
+  by a job of its own, which ends nothing when it closes). A process the
+  agent started that still holds the box's session when the agent exits
+  ends too, whatever its name, so the box never shows open elsewhere.
   An exited terminal keeps its last screen and scrollback as rows you can
   still scroll, and the images on its screen; its emulator and threads are
   freed at once. The 20 most recently exited or scrolled terminals keep their
