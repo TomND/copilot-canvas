@@ -793,10 +793,11 @@ impl Terminal {
     }
 
     /// Scrolls a frozen screen (`false`: the engine runs; it scrolls itself).
+    /// A screen scrolled keeps its scrollback among the most recent ones.
     fn scroll_frozen(&self, scroll: Scroll) -> bool {
-        let Some(mut frozen) = self.frozen() else { return false };
-        frozen.scroll(scroll);
-        drop(frozen);
+        let Some(kept) = self.frozen.get() else { return false };
+        lock(kept).scroll(scroll);
+        crate::emulator::frozen::recent().touch(kept);
         self.generation.fetch_add(1, Ordering::AcqRel);
         let _ = self.pump.try_send(());
         true
@@ -807,6 +808,10 @@ impl Terminal {
     /// yet is queued for encoding ([`ImagePng::Pending`]), and a changed image
     /// is encoded again at most every [`IMAGE_REENCODE`].
     pub fn image_png(self: &Arc<Self>, id: u32, generation: u64) -> ImagePng {
+        // An exited terminal's images were encoded when its engine froze (R2-B-06).
+        if let Some(frozen) = self.frozen() {
+            return frozen_image(&frozen, id, generation);
+        }
         let now = Instant::now();
         if let Some(cached) = lock(&self.encoded).get(&id) {
             if cached.generation == generation {
@@ -1142,6 +1147,15 @@ impl Terminal {
     }
 }
 
+/// An image of a frozen screen (`generation`: as its placement says; the
+/// screen and its images no longer change).
+fn frozen_image(frozen: &Frozen, id: u32, generation: u64) -> ImagePng {
+    match frozen.images.get(&id) {
+        Some(image) => ImagePng::Ready(EncodedImage { generation, width: image.width, height: image.height, png: image.png.clone() }),
+        None => ImagePng::Unavailable,
+    }
+}
+
 /// Queues a client's control message without waiting: a full queue (an
 /// engine that fell [`CONTROL_QUEUE`] messages behind) refuses it at once
 /// with the reason, and the client's reader goes on.
@@ -1335,10 +1349,18 @@ impl EmulatorThread {
     /// the engine (cells, images, parser) and ends this thread (S3-06).
     fn freeze(mut self, mut emu: Box<dyn Emulator>) {
         let (fed, cols, rows) = (self.fed, self.cols, self.rows);
-        let frozen = catch_unwind(AssertUnwindSafe(|| Frozen::capture(emu.as_mut(), fed))).unwrap_or_else(|_| Frozen::blank(cols, rows));
+        let frozen = catch_unwind(AssertUnwindSafe(|| {
+            let mut frozen = Frozen::capture(emu.as_mut(), fed);
+            // Its pixels go with the engine: the images on screen are kept as PNG files.
+            frozen.keep_images(emu.as_mut(), MAX_IMAGE_MESSAGE);
+            frozen
+        }))
+        .unwrap_or_else(|_| Frozen::blank(cols, rows));
         // Dropping an engine may panic.
         let _ = catch_unwind(AssertUnwindSafe(move || drop(emu)));
         let frozen = Arc::new(Mutex::new(frozen));
+        // Its scrollback is kept while it is among the most recently exited or scrolled.
+        crate::emulator::frozen::recent().touch(&frozen);
         if let Some(exit) = self.exit.take() {
             (exit.freeze)(frozen.clone());
         }
@@ -1831,11 +1853,13 @@ mod tests {
         cols: u16,
         rows: u16,
         sync: Option<Instant>,
+        /// An image placed at the top left as image 7.
+        image: Option<ImageData>,
     }
 
     impl Probe {
         fn new(log: &ProbeLog) -> Self {
-            Self { log: log.clone(), feed_delay: Duration::ZERO, snapshot_delay: Duration::ZERO, cols: 80, rows: 24, sync: None }
+            Self { log: log.clone(), feed_delay: Duration::ZERO, snapshot_delay: Duration::ZERO, cols: 80, rows: 24, sync: None, image: None }
         }
     }
 
@@ -1859,7 +1883,18 @@ mod tests {
         fn snapshot(&self) -> Snapshot {
             std::thread::sleep(self.snapshot_delay);
             self.log.snapshots.fetch_add(1, Ordering::SeqCst);
-            Snapshot { cols: self.cols, rows: self.rows, lines: vec![Vec::new(); self.rows as usize], ..Snapshot::default() }
+            let images = self
+                .image
+                .iter()
+                .map(|image| crate::emulator::SnapshotImage {
+                    placement: crate::protocol::Placement { image_id: 7, cols: 1, rows: 1, width: image.width, height: image.height, ..Default::default() },
+                    generation: image.generation,
+                })
+                .collect();
+            Snapshot { cols: self.cols, rows: self.rows, lines: vec![Vec::new(); self.rows as usize], images, ..Snapshot::default() }
+        }
+        fn image(&mut self, id: u32) -> Option<ImageData> {
+            self.image.clone().filter(|_| id == 7)
         }
         fn scroll(&mut self, _: Scroll) {}
         fn display_offset(&self) -> u32 {
@@ -2295,6 +2330,55 @@ mod tests {
         assert_eq!(frozen.fed, lines.join("\r\n").len() as u64 + 9);
         frozen.scroll(Scroll::Top);
         assert_eq!(frozen.snapshot().text().lines().next(), Some("line 1"));
+    }
+
+    /// R2-B-06: the images on an exited terminal's screen are kept as PNG
+    /// files when its engine freezes (their pixels go with it), so a client
+    /// that shows it later (a reconnect) still gets them.
+    #[test]
+    fn an_exited_terminal_keeps_the_images_on_its_screen() {
+        let (control, control_rx) = bounded(CONTROL_QUEUE);
+        let (output, output_rx) = bounded::<Vec<u8>>(OUTPUT_QUEUE);
+        let kept: Arc<Mutex<Option<Arc<Mutex<Frozen>>>>> = Arc::default();
+        let keep = kept.clone();
+        let log = ProbeLog::default();
+        let probe = Probe { image: Some(ImageData { width: 2, height: 2, generation: 3, rgba: vec![255; 16] }), ..Probe::new(&log) };
+        let thread = EmulatorThread {
+            id: "pictures".into(),
+            cols: 80,
+            rows: 24,
+            control: control_rx,
+            output: output_rx,
+            generation: Arc::new(AtomicU64::new(1)),
+            state: Arc::new(State::default()),
+            input: bounded(16).0,
+            clipboard: bounded(16).0,
+            changed: bounded(1024).0,
+            pump: bounded(1).0,
+            fail: None,
+            burst: 0,
+            notify: None,
+            bridge: InlineImages::default(),
+            replies: true,
+            remake: None,
+            fed: 0,
+            resizes: Arc::default(),
+            chunks: 0,
+            exit: Some(ExitHook { ended: Arc::new(AtomicBool::new(true)), freeze: Box::new(move |frozen| *lock(&keep) = Some(frozen)) }),
+            output_done: false,
+        };
+        spawn_emulator(thread, move || Box::new(probe)).unwrap();
+        drop(output);
+        control.send(Ctl::Exited).unwrap();
+        wait_until("frozen", || lock(&kept).is_some());
+        let frozen = lock(&kept).clone().unwrap();
+        let frozen = lock(&frozen);
+        assert_eq!(frozen.snapshot().images.len(), 1, "the placement stays");
+        match frozen_image(&frozen, 7, 3) {
+            ImagePng::Ready(image) => assert!(image.png.starts_with(b"\x89PNG") && (image.width, image.height, image.generation) == (2, 2, 3)),
+            _ => panic!("the image is kept"),
+        }
+        assert!(matches!(frozen_image(&frozen, 8, 1), ImagePng::Unavailable), "one never placed is not");
     }
 
     #[test]

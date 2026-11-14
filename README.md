@@ -1454,7 +1454,9 @@ and `docs/REMOTE.md`.
   that broke away from its job (Windows: each agent's processes are followed
   by a job of its own, which ends nothing when it closes).
   An exited terminal keeps its last screen and scrollback as rows you can
-  still scroll; its emulator and threads are freed at once.
+  still scroll, and the images on its screen; its emulator and threads are
+  freed at once. The 20 most recently exited or scrolled terminals keep their
+  scrollback; older ones keep their last screen.
 - **Idle auto-stop** (*Settings › Performance › Stop idle sessions*: never /
   30 / 60 / 120 / 240 (default) min) gracefully stops a canvas-started Copilot
   session only when it is idle (not working, waiting on you, waiting for review
