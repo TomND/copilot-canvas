@@ -1884,13 +1884,20 @@ impl App {
                 // complete list): their sessions' `live` is doubted.
                 let mut ended: Vec<String> = Vec::new();
                 // After a reconnect the first list is complete: forget the rest.
-                if std::mem::take(&mut self.resync_terms) {
+                let whole = std::mem::take(&mut self.resync_terms);
+                if whole {
                     let known: HashSet<&str> = infos.iter().map(|i| i.id.as_str()).collect();
                     ended.extend(self.terms.values().filter(|t| t.alive && !known.contains(t.id.as_str())).map(|t| t.id.clone()));
                     self.terms.retain(|id, _| known.contains(id.as_str()));
                     self.views.retain(|id, _| known.contains(id.as_str()));
                 }
                 for info in infos {
+                    // The state of an earlier run, overtaken by the newer one held
+                    // here, is never taken back (R2-A-08). A complete list is the
+                    // service's present (a restarted service's clock may differ).
+                    if !whole && self.terms.get(&info.id).is_some_and(|held| info.started_ms < held.started_ms) {
+                        continue;
+                    }
                     // Bells and notifications from a session ring the outer terminal
                     // (at most once a second).
                     if self.terms.get(&info.id).is_some_and(|old| info.bells > old.bells)
@@ -2897,6 +2904,26 @@ mod connection_tests {
         // Running again here: no doubt left.
         app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "s2".into(), alive: true, started_ms: 2, ..Default::default() }]));
         assert!(app.live_doubted.is_empty());
+    }
+
+    #[test]
+    fn an_earlier_runs_state_never_overwrites_a_newer_one() {
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        let info = |alive: bool, started_ms: u64| TermInfo { id: "t".into(), alive, started_ms, exit_code: (!alive).then_some(0), ..Default::default() };
+        app.on_service(ServiceMsg::Terminals(vec![info(true, 200)]));
+        // The first run's exit, read before the relaunch and sent after it (R2-A-08).
+        app.on_service(ServiceMsg::Terminals(vec![info(false, 100)]));
+        assert!(app.owned_alive("t"), "the relaunch stays alive");
+        app.on_service(ServiceMsg::Terminals(vec![info(false, 200)]));
+        assert!(!app.owned_alive("t"), "its own exit is taken");
+        app.on_service(ServiceMsg::Terminals(vec![info(true, 300)]));
+        assert!(app.owned_alive("t"));
+        // A reconnect's whole list is the service's present, whatever its clock says.
+        app.reset_service_state();
+        app.on_service(ServiceMsg::Terminals(vec![info(true, 50)]));
+        assert_eq!(app.terms.get("t").map(|t| t.started_ms), Some(50));
     }
 
     #[test]
