@@ -930,6 +930,39 @@ impl Host {
         lock(&self.clients).len()
     }
 
+    /// Every connection of the paired remote client `remote_id` (`None`:
+    /// of every paired client), listed or not: a window's and its
+    /// requests-only connection alike (R3-A-01).
+    pub fn remote_connections(&self, remote_id: Option<&str>) -> Vec<Arc<Client>> {
+        let mut found: HashMap<u64, Arc<Client>> = HashMap::new();
+        let mut take = |client: &Arc<Client>| {
+            if client.remote_id.as_deref().is_some_and(|id| remote_id.is_none_or(|wanted| wanted == id)) && !client.is_dropped() {
+                found.insert(client.id, client.clone());
+            }
+        };
+        // Lock order: clients before serving.
+        let clients = lock(&self.clients);
+        clients.values().for_each(&mut take);
+        lock(&self.serving).values().for_each(&mut take);
+        drop(clients);
+        let mut found: Vec<Arc<Client>> = found.into_values().collect();
+        found.sort_by_key(|c| c.id);
+        found
+    }
+
+    /// Drops every connection of the paired remote client `remote_id`
+    /// (`None`: of every paired client), listed or not; answers how many.
+    /// A connection still authenticating checks the revocation again once
+    /// it is served (`serve_client`), so none slips between the two.
+    pub fn close_remote(self: &Arc<Self>, remote_id: Option<&str>, why: &str) -> usize {
+        let connections = self.remote_connections(remote_id);
+        for connection in &connections {
+            let only = if connection.requests_only { " (requests only)" } else { "" };
+            self.drop_client(connection, Some(&format!("closing client {}{only} of {:?}: {why}", connection.id, connection.remote_id.as_deref().unwrap_or_default())));
+        }
+        connections.len()
+    }
+
     pub fn broadcast(&self, message: ServiceMsg) {
         let clients: Vec<Arc<Client>> = lock(&self.clients).values().cloned().collect();
         for client in clients {
@@ -1503,14 +1536,16 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     if remote && info.caps & CAP_ACK == 0 {
         client.outbox.set_paced();
     }
+    // Served from now on, listed or not: a revocation finds it (R3-A-01).
+    lock(&host.serving).insert(id, client.clone());
     if !requests_only {
         host.register(&client);
     }
     let revoked = {
         // What follows is this end's work, not the client's silence.
         let _busy = client.liveness.as_ref().map(|l| l.busy());
-        // A revocation between the handshake and now closed only the clients
-        // listed then: check again now that this one is listed.
+        // A revocation between the handshake and now closed only the
+        // connections served then: check again now that this one is.
         let revoked = client.remote_id.as_ref().is_some_and(|remote_id| !host.app().remote_active(remote_id));
         if revoked {
             host.drop_client(&client, Some(&format!("remote client {:?} was revoked while it connected", client.remote_id.as_deref().unwrap_or_default())));
@@ -1526,6 +1561,7 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
 
     // The backend's snapshot is the worker's first job (R2-A-03): reading starts at once.
     let result = if revoked { Ok(()) } else { serve_messages(host, &client, &mut reader) };
+    lock(&host.serving).remove(&id);
     host.drop_client(&client, None);
     if !requests_only {
         // Whatever a message handled meanwhile left for this client.
@@ -1815,7 +1851,6 @@ fn handled_inline(message: &ClientMsg) -> bool {
 fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameReader) -> Result<()> {
     let (work_tx, work_rx) = bounded::<Work>(WORK_QUEUE);
     let pending: Arc<Pending> = Arc::default();
-    lock(&host.serving).insert(client.id, client.clone());
     let worker = {
         let (host, client, pending) = (host.clone(), client.clone(), pending.clone());
         std::thread::Builder::new().name("client-work".into()).spawn(move || {
@@ -1826,13 +1861,7 @@ fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameRead
             }
         })
     };
-    let worker = match worker {
-        Ok(worker) => worker,
-        Err(error) => {
-            lock(&host.serving).remove(&client.id);
-            return Err(error.into());
-        }
-    };
+    let worker = worker?;
     if !client.requests_only {
         let _ = work_tx.send(Work::Connected);
     }
@@ -1910,7 +1939,6 @@ fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameRead
     // What was read before the end is still handled (as it would have been inline).
     let _ = worker.join();
     pending.wait_threads();
-    lock(&host.serving).remove(&client.id);
     result
 }
 
@@ -3501,6 +3529,97 @@ mod tests {
     /// Whether the test service logged its shutdown.
     fn host_shutting_down(instance: &Instance) -> bool {
         std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains("shutdown requested")
+    }
+
+    /// A backend that knows one paired client, "home", until it is revoked;
+    /// it answers every request at once.
+    struct RevocableApp {
+        secret: Vec<u8>,
+        revoked: AtomicBool,
+    }
+
+    impl HostApp for RevocableApp {
+        fn resolve_launch(&self, _: &str, _: LaunchKind, _: &str) -> Result<Resolved> {
+            bail!("no agents here")
+        }
+        fn client_connected(&self, _: &Arc<Client>) {}
+        fn client_disconnected(&self, _: u64) {}
+        fn message(&self, client: &Arc<Client>, message: ClientMsg) -> Result<()> {
+            if let ClientMsg::Rpc { id, .. } = message {
+                client.send(ServiceMsg::RpcReply { id, json: "\"Done\"".into() });
+            }
+            Ok(())
+        }
+        fn input_noted(&self, _: &str) {}
+        fn terminals_changed(&self) {}
+        fn has_work(&self) -> bool {
+            false
+        }
+        fn remote_credential(&self, id: &str) -> Credential {
+            if id == "home" && !self.revoked.load(Ordering::Acquire) { Credential::Secret(self.secret.clone()) } else { Credential::Refused }
+        }
+    }
+
+    /// A paired client's connection over plain TCP: what it receives, its
+    /// writer, and the stream (to tell when the service closed it).
+    fn paired_client(addr: SocketAddr, secret: &[u8], name: &str, caps: u32) -> (Receiver<ServiceMsg>, FrameWriter, TcpStream) {
+        let stream = TcpStream::connect(addr).unwrap();
+        let (reader, writer, _closer) = tcp::split(stream.try_clone().unwrap()).unwrap();
+        let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
+        let session: Vec<u8> = name.bytes().chain(std::iter::repeat(0)).take(16).collect();
+        let info = protocol::ClientInfo { name: name.into(), caps, session, remote_id: Some("home".into()) };
+        handshake::open(&mut reader, &mut writer, secret, "test", Some(info)).expect("the paired client connects");
+        reader.accept_compressed().unwrap();
+        let (tx, rx) = unbounded();
+        std::thread::spawn(move || {
+            while let Ok(Some(message)) = reader.recv::<ServiceMsg>() {
+                if tx.send(message).is_err() {
+                    break;
+                }
+            }
+        });
+        (rx, writer, stream)
+    }
+
+    /// R3-A-01: revoking a paired client closes every connection of it, its
+    /// requests-only (upload) connection included, which is listed among
+    /// its connections while open; a request sent on it afterwards gets no answer.
+    #[test]
+    fn a_revocation_closes_every_connection_of_the_client_uploads_included() {
+        let secret = vec![7u8; 32];
+        let app = Arc::new(RevocableApp { secret: secret.clone(), revoked: AtomicBool::new(false) });
+        let (host_tx, host_rx) = bounded::<Arc<Host>>(1);
+        let made = app.clone();
+        let (_instance, addr) = test_service("revoke", move |host| {
+            let _ = host_tx.send(host.clone());
+            made
+        });
+        let host = host_rx.recv().unwrap();
+        let (_window_rx, _window, mut window_stream) = paired_client(addr, &secret, "home-window", protocol::CAP_FRAME8);
+        let (uploads_rx, mut uploads, mut uploads_stream) = paired_client(addr, &secret, "home-uploads", protocol::CAP_FRAME8 | CAP_REQUESTS_ONLY);
+        uploads.send(&ClientMsg::Rpc { id: 1, json: "\"Info\"".into() }).unwrap();
+        expect(&uploads_rx, Duration::from_secs(5), "the upload connection is served", |m| matches!(m, ServiceMsg::RpcReply { id: 1, .. }));
+        eventually(Duration::from_secs(5), "both connections are counted", || host.remote_connections(Some("home")).len() == 2);
+        assert_eq!(host.remote_connections(Some("home")).iter().filter(|c| c.requests_only).count(), 1, "the upload connection shows as such");
+        assert_eq!(lock(&host.clients).len(), 1, "the upload connection is still never listed");
+        // The owner revokes it.
+        let revoked_at = Instant::now();
+        app.revoked.store(true, Ordering::Release);
+        assert_eq!(host.close_remote(Some("home"), "revoked"), 2);
+        assert!(closed_within(&mut window_stream, Duration::from_secs(1)), "the window's connection is closed");
+        assert!(closed_within(&mut uploads_stream, Duration::from_secs(1)), "the upload connection is closed");
+        assert!(revoked_at.elapsed() < Duration::from_secs(2));
+        // Its next request is not answered (the connection is gone).
+        let _ = uploads.send(&ClientMsg::Rpc { id: 2, json: "\"Info\"".into() });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!uploads_rx.try_iter().any(|m| matches!(m, ServiceMsg::RpcReply { id: 2, .. })), "a revoked connection gets no answer");
+        eventually(Duration::from_secs(2), "nothing of it is served any more", || host.remote_connections(Some("home")).is_empty() && lock(&host.serving).is_empty());
+        // A new connection with the old secret is refused at the handshake.
+        let stream = TcpStream::connect(addr).unwrap();
+        let (reader, writer, _closer) = tcp::split(stream).unwrap();
+        let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
+        let info = protocol::ClientInfo { name: "home-uploads".into(), caps: protocol::CAP_FRAME8 | CAP_REQUESTS_ONLY, session: vec![1; 16], remote_id: Some("home".into()) };
+        assert!(handshake::open(&mut reader, &mut writer, &secret, "test", Some(info)).is_err(), "the revoked secret no longer authenticates");
     }
 
     /// A service of its own (TCP on a loopback port) with the backend `make_app` builds.

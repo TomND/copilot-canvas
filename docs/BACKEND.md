@@ -90,8 +90,8 @@ the connection dropped while waiting).
 | `DocBackup { path, label, doc }` | `Text` (backup file) | before a VS Code sync, before its undo |
 | `DocBackups { path }` | `Texts` (oldest first) | backups of a canvas |
 | `PairCode { name }` | `Pairing(PairingCode)`: code, expiry, the remote address (listening starts if it was off) | `atelier remote pair` (the service's own pipe only) |
-| `RemoteClients` | `RemoteClients(list)`: id, name, paired, last seen, revoked, open connections | `remote clients` (pipe only) |
-| `RemoteRevoke { client }` | `Text` (what was revoked; its connections are closed) | `remote revoke` (pipe only) |
+| `RemoteClients` | `RemoteClients(list)`: id, name, paired, last seen, revoked, open connections (`uploads`: how many of them are requests-only upload connections; new field, absent from older services) | `remote clients` (pipe only) |
+| `RemoteRevoke { client }` | `Text` (what was revoked; every connection of it is closed, listed or not: its upload connections too) | `remote revoke` (pipe only) |
 | `SetClipboardImage { png }` (base64 in JSON, at most 20 MB) | `Done` (the image is on the service machine's clipboard as `CF_DIB` + `PNG`) | remote image paste (Ctrl+V / Alt+V), see REMOTE.md |
 | `Upload { name, id, offset, data, last }` | `Done`, the last piece `Text` (the file's path) | files dropped on a terminal in remote mode: base64 pieces (any size; clients send 256 KiB since round 1, 4 MiB before), files of at most 50 MB, written under `<home>/uploads/<date>/` with a free name. Clients send uploads, and clipboard images over 256 KiB, on a short-lived connection of their own (`conn::Bulk`: another client with its own session that shows nothing), so the window's typing and heartbeats never wait behind them |
 | `CreateCanvasAgent { files }` | `Text` (the slug used) | a new canvas-wide agent (the *New canvas agent* dialog; `rules` = its Instructions): `rules.md`, `state.md`, `log.md` in `<home>/canvas-agents/<canvas>/agents/<slug>` (the first free slug), the canvas's `GOALS.md` and `skills/` when missing. `files` names the canvas by its id (letters, digits, `-`), never a folder |

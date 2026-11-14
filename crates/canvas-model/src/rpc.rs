@@ -307,14 +307,21 @@ pub struct RemoteClient {
     pub last_seen_ms: u64,
     /// When it was revoked (0: it is not).
     pub revoked_ms: u64,
-    /// Connections it has open now.
+    /// Connections it has open now (its upload connections included).
     pub connections: u32,
+    /// Of those, connections for requests only (a window's uploads).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub uploads: u32,
     /// Who opened the code it paired with (a local process, or a command in a canvas terminal).
     #[serde(default)]
     pub paired_by: String,
     /// When that code was opened.
     #[serde(default)]
     pub code_opened_ms: u64,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// `Vec<u8>` as a base64 string in JSON (images in requests).

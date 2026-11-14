@@ -127,10 +127,13 @@ pub fn clients(instance: &Instance) -> Result<()> {
     println!("{:<20} {:<24} {:<22} {:<12} STATE", "ID", "NAME", "PAIRED", "LAST SEEN");
     for c in &list {
         let seen = if c.last_seen_ms == 0 { "never".to_owned() } else { format!("{} ago", format_age(c.last_seen_ms, now)) };
+        // Upload connections count and show too (R3-A-01).
+        let uploads = if c.uploads > 0 { format!(", {} for uploads", c.uploads) } else { String::new() };
         let state = match (c.revoked_ms, c.connections) {
             (0, 0) => "active".to_owned(),
-            (0, n) => format!("connected ({n})"),
-            (at, _) => format!("revoked {}", date(at)),
+            (0, n) => format!("connected ({n}{uploads})"),
+            (at, 0) => format!("revoked {}", date(at)),
+            (at, n) => format!("revoked {}, {n} connection(s) still closing{uploads}", date(at)),
         };
         println!("{:<20} {:<24} {:<22} {:<12} {state}", c.id, c.name, date(c.created_ms), seen);
         if !c.paired_by.is_empty() {

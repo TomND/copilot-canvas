@@ -1124,13 +1124,15 @@ impl Agents {
                     Response::Pairing(PairingCode { code: canvas_common::pairing::format_code(&code), expires_ms, listen: format!("127.0.0.1:{port}"), name })
                 }
                 Request::RemoteClients => {
-                    let open: Vec<String> = lock(&self.clients).values().filter_map(|c| c.remote_id.clone()).collect();
+                    // Every connection, its requests-only (upload) ones included (R3-A-01).
+                    let open: Vec<(String, bool)> = self.host.remote_connections(None).iter().filter_map(|c| Some((c.remote_id.clone()?, c.requests_only))).collect();
                     Response::RemoteClients(
                         self.remote
                             .list()?
                             .into_iter()
                             .map(|c| RemoteClient {
-                                connections: open.iter().filter(|id| **id == c.id).count() as u32,
+                                connections: open.iter().filter(|(id, _)| *id == c.id).count() as u32,
+                                uploads: open.iter().filter(|(id, only)| *id == c.id && *only).count() as u32,
                                 id: c.id,
                                 name: c.name,
                                 created_ms: c.created_ms,
@@ -1145,12 +1147,10 @@ impl Agents {
                 Request::RemoteRevoke { client: key } => {
                     let revoked = self.remote.revoke(&key, now)?;
                     self.push.devices.remove(Some(&revoked.id), None);
-                    let connected: Vec<Arc<Client>> = lock(&self.clients).values().filter(|c| c.remote_id.as_deref() == Some(revoked.id.as_str())).cloned().collect();
-                    for connection in &connected {
-                        connection.close();
-                    }
-                    log(&self.instance, &format!("revoked remote client {:?} ({:?}); closed {} connection(s)", revoked.id, revoked.name, connected.len()));
-                    let mut text = format!("Revoked {} ({}); {} live connection(s) closed.", revoked.name, revoked.id, connected.len());
+                    // Every connection of it, listed or not: its upload connection too (R3-A-01).
+                    let closed = self.host.close_remote(Some(&revoked.id), "revoked");
+                    log(&self.instance, &format!("revoked remote client {:?} ({:?}); closed {closed} connection(s)", revoked.id, revoked.name));
+                    let mut text = format!("Revoked {} ({}); {closed} live connection(s) closed.", revoked.name, revoked.id);
                     match self.listen_only_while_needed() {
                         Ok(Some(off)) => text = format!("{text}\n{off}"),
                         Ok(None) => {}
@@ -1280,7 +1280,9 @@ impl Agents {
             settings.save(home).context("cannot turn off remote listening in settings.json")?;
         }
         let stopped = self.host.stop_remote();
-        log(&self.instance, "no paired client is left and no pairing code is open: remote listening is off");
+        // No paired client is active: whatever connection of one is still open goes too.
+        let closed = self.host.close_remote(None, "remote listening is off");
+        log(&self.instance, &format!("no paired client is left and no pairing code is open: remote listening is off{}", if closed > 0 { format!("; closed {closed} connection(s)") } else { String::new() }));
         Ok(stopped.then(|| "No paired client is left: remote listening is off (`atelier remote pair` turns it on again).".to_owned()))
     }
 }

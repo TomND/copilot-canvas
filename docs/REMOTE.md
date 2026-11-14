@@ -373,14 +373,18 @@ PBKDF2 rounds against a 59-bit code that lives 10 minutes; a captured
 `PairStart` alone is worth nothing.
 
 On the Cloud PC, `remote clients` lists the clients (paired, last seen,
-connected now, revoked, and who opened the code each paired with, and when)
+connected now with how many of those connections are upload connections,
+revoked, and who opened the code each paired with, and when)
 and `remote revoke ID|NAME` revokes one: its secret is erased (only its
-revocation key is kept), its live connections are closed at once, and every
+revocation key is kept), every live connection of it is closed at once (its
+windows' and their requests-only upload connections alike, R3-A-01), and every
 later attempt gets a refusal only that client can verify ("this client was
-revoked on the service; pair it again"). A client admitted while it was being
-revoked is checked again once it is listed and dropped. When the last active
+revoked on the service; pair it again"). A connection admitted while it was
+being revoked is checked again once it is served (listed or not) and dropped.
+When the last active
 client is revoked and no code is open, remote listening is turned off (setting
-and listener) unless `ATELIER_LISTEN` asks for it; `remote pair` turns
+and listener) and any connection of a paired client still open is closed,
+unless `ATELIER_LISTEN` asks for it; `remote pair` turns
 it on again. At home, `remote servers` lists the paired services and `remote
 forget NAME` removes one (revoke it on the service too). The pairing requests
 are only answered on the service's own pipe, never to TCP clients.
