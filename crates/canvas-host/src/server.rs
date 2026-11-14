@@ -1558,17 +1558,13 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         if revoked {
             host.drop_client(&client, Some(&format!("remote client {:?} was revoked while it connected", client.remote_id.as_deref().unwrap_or_default())));
         }
-        // What the replaced connection read before it went is handled first
-        // (for a moment at most): this one's input never overtakes it (R2-A-06).
-        if let Some(old) = replaced {
-            old.wait_drained(DRAIN_WAIT);
-        }
         revoked
     };
     host.touch();
 
-    // The backend's snapshot is the worker's first job (R2-A-03): reading starts at once.
-    let result = if revoked { Ok(()) } else { serve_messages(host, &client, &mut reader) };
+    // The backend's snapshot is the worker's first job (R2-A-03), after what
+    // the replaced connection read was handled (R2-A-06): reading starts at once (R3-A-10).
+    let result = if revoked { Ok(()) } else { serve_messages(host, &client, &mut reader, replaced) };
     lock(&host.serving).remove(&id);
     host.drop_client(&client, None);
     if !requests_only {
@@ -1620,6 +1616,9 @@ enum Work {
     Leave(String),
     /// The backend's snapshot for a client that just connected (its first job).
     Connected,
+    /// What the connection this one replaced read is handled first (for a
+    /// moment at most): this one's terminal work never overtakes it (R2-A-06).
+    Drain(Arc<Client>),
 }
 
 impl Work {
@@ -1630,6 +1629,7 @@ impl Work {
             Work::Input { .. } => "input".into(),
             Work::Leave(_) => "a hidden tile".into(),
             Work::Connected => "the connect snapshot".into(),
+            Work::Drain(_) => "the previous connection's end".into(),
         }
     }
 
@@ -1638,7 +1638,7 @@ impl Work {
         match self {
             Work::Message(message) => message_terminal(message),
             Work::Input { id, .. } | Work::Leave(id) => Some(id),
-            Work::Connected => None,
+            Work::Connected | Work::Drain(_) => None,
         }
     }
 }
@@ -1666,6 +1666,9 @@ struct Pending {
     /// Launch threads running.
     threads: Mutex<usize>,
     idle: std::sync::Condvar,
+    /// The connection this one replaced is still being drained: every
+    /// terminal message waits behind it on the worker (R3-A-10).
+    draining: AtomicBool,
 }
 
 impl Pending {
@@ -1752,6 +1755,10 @@ fn handle_work(host: &Arc<Host>, client: &Arc<Client>, work: Work, quiet: bool) 
             host.app().client_connected(client);
             Ok(())
         }
+        Work::Drain(old) => {
+            old.wait_drained(DRAIN_WAIT);
+            Ok(())
+        }
     };
     match result {
         Ok(()) => true,
@@ -1811,6 +1818,13 @@ fn run_held(host: &Arc<Host>, client: &Arc<Client>, pending: &Arc<Pending>, id: 
             let next = match work.take() {
                 Some(work) => work,
                 None => {
+                    // This launch found another one under way (the restore's,
+                    // another window's): what was held behind it waits for
+                    // that one too, so a Stop stops what it starts (R3-A-07).
+                    let until = Instant::now() + LAUNCH_AWAIT;
+                    while host.is_launching(&id) && Instant::now() < until {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
                     let mut held = lock(&pending_job.held);
                     match held.get_mut(&id).and_then(std::collections::VecDeque::pop_front) {
                         Some(work) => work,
@@ -1925,20 +1939,28 @@ fn handled_inline(message: &ClientMsg) -> bool {
 /// `Launch`), or that another launch is starting, waits behind that work. The
 /// worker's first job is the backend's snapshot for the new client. Whatever
 /// this thread does itself is not the client's silence ([`Liveness::busy`]).
-fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameReader) -> Result<()> {
+fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameReader, replaced: Option<Arc<Client>>) -> Result<()> {
     let (work_tx, work_rx) = bounded::<Work>(WORK_QUEUE);
     let pending: Arc<Pending> = Arc::default();
+    pending.draining.store(replaced.is_some(), Ordering::Release);
     let worker = {
         let (host, client, pending) = (host.clone(), client.clone(), pending.clone());
         std::thread::Builder::new().name("client-work".into()).spawn(move || {
             for work in work_rx {
+                let drain = matches!(work, Work::Drain(_));
                 client.work_since.store(now_ms(), Ordering::Release);
                 run_work(&host, &client, &pending, work);
                 client.work_since.store(0, Ordering::Release);
+                if drain {
+                    pending.draining.store(false, Ordering::Release);
+                }
             }
         })
     };
     let worker = worker?;
+    if let Some(old) = replaced {
+        let _ = work_tx.send(Work::Drain(old));
+    }
     if !client.requests_only {
         let _ = work_tx.send(Work::Connected);
     }
@@ -1979,8 +2001,9 @@ fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameRead
                 continue;
             }
             let _busy = client.liveness.as_ref().map(|l| l.busy());
-            // Work waits for it, or another launch of it is starting (R2-A-07).
-            let queued = message_terminal(&message).is_some_and(|id| lock(&pending.waiting).contains_key(id) || host.is_launching(id));
+            // Work waits for it, another launch of it is starting (R2-A-07),
+            // or the replaced connection is still being drained (R3-A-10).
+            let queued = message_terminal(&message).is_some_and(|id| pending.draining.load(Ordering::Acquire) || lock(&pending.waiting).contains_key(id) || host.is_launching(id));
             let mut leave = Vec::new();
             match message {
                 // A tile hidden while its launch waits: its size wish goes once the launch is done.
@@ -4095,6 +4118,58 @@ mod tests {
         eventually(Duration::from_secs(8), "both messages handled", || lock(&app.seen).len() == 2);
         assert_eq!(*lock(&app.seen), ["Track", "RefreshSessions"], "the reconnection's message after its predecessor's");
         closer2.close();
+    }
+
+    /// R3-A-10: a reconnection is served at once (subscriptions, frames,
+    /// `Stats`) while what its predecessor read is still handled.
+    #[test]
+    fn a_reconnection_gets_frames_at_once_while_its_predecessor_drains() {
+        let app = busy_app(None, Duration::from_secs(3));
+        let made = app.clone();
+        let (host_tx, host_rx) = bounded::<Arc<Host>>(1);
+        let (instance, addr) = test_service("drain-frames", move |host| {
+            let _ = made.host.set(Arc::downgrade(host));
+            let _ = host_tx.send(host.clone());
+            made
+        });
+        let host = host_rx.recv().unwrap();
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        host.launch("r", ticking_program(), &cwd, 80, 24).unwrap();
+        let (_rx, mut writer, _closer) = test_client(&instance, addr, "drain-frames");
+        writer.send(&ClientMsg::Track { ids: Vec::new() }).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        // The same client session reconnects while its old connection's slow message runs.
+        let (rx2, mut writer2, closer2) = test_client(&instance, addr, "drain-frames");
+        let asked = Instant::now();
+        writer2.send(&ClientMsg::Subscribe8 { ids: vec!["r".into()], focused: Some("r".into()) }).unwrap();
+        writer2.send(&ClientMsg::Stats).unwrap();
+        expect(&rx2, Duration::from_secs(2), "a frame while the predecessor drains", |m| matches!(m, ServiceMsg::Frame8(f) if f.id == "r"));
+        assert!(asked.elapsed() < Duration::from_millis(1000), "the first frame took {:?}", asked.elapsed());
+        // Its terminal work still waits behind the predecessor's.
+        writer2.send(&ClientMsg::RefreshSessions).unwrap();
+        eventually(Duration::from_secs(8), "both messages handled", || lock(&app.seen).len() == 2);
+        assert_eq!(*lock(&app.seen), ["Track", "RefreshSessions"]);
+        closer2.close();
+        let _ = host.terminal("r").map(|t| t.stop(true));
+    }
+
+    /// R3-A-07: a Stop held behind this connection's Launch, which found
+    /// another launch of the box under way, waits for that launch and stops
+    /// what it started (it is not taken for a cancel of nothing).
+    #[test]
+    fn a_stop_behind_a_launch_that_found_another_under_way_stops_what_it_starts() {
+        let (instance, addr, host) = slow_service("stop-launching", Duration::from_millis(1200), Duration::ZERO);
+        let (_rx, mut writer, closer) = test_client(&instance, addr, "stop-launching-client");
+        // The restore (or another window) launches "e".
+        let launcher = host.clone();
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let other = std::thread::spawn(move || launcher.launch("e", LaunchKind::Copilot { new_name: None, prompt: None, resume: false }, &cwd, 80, 24));
+        eventually(Duration::from_secs(2), "the other launch is under way", || host.is_launching("e"));
+        writer.send(&agent_launch("e", 80, 24)).unwrap();
+        writer.send(&ClientMsg::Stop { id: "e".into(), force: true }).unwrap();
+        other.join().unwrap().unwrap();
+        eventually(Duration::from_secs(5), "the box ends stopped", || host.terminal("e").is_ok_and(|t| !t.alive.load(Ordering::Acquire)));
+        closer.close();
     }
 
     #[test]

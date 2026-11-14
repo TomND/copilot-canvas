@@ -714,9 +714,13 @@ most 8 files and 4 MiB in all.
   its `Launch`), or that another launch is starting (another connection's,
   the restore's), waits behind that work (at most 20 s for another's launch;
   keys refused after a launch that failed give one error, not one per key);
+  what is held behind a `Launch` that found another launch of the box under
+  way waits for that one too, so a `Stop` stops what it starts (R3-A-07);
   numbered input is still admitted in arrival order. A reconnection of the
-  same client session waits (at most 5 s) for what its predecessor read to be
-  handled before it reads anything. `Health::working` names a worker busy
+  same client session reads at once (subscriptions, frames, heartbeats,
+  `Stats`), and its worker's first job is waiting (at most 5 s) for what its
+  predecessor read to be handled: until then every message about a terminal
+  waits behind it (R2-A-06, R3-A-10). `Health::working` names a worker busy
   with one message, a dropped connection's still draining included (a wedge
   sign after 30 s); `pending_closes` only a dropped connection whose reader
   has not ended. A message this build cannot decode (a newer client) is
