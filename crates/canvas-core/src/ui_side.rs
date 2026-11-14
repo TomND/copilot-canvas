@@ -617,7 +617,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
     if app.transcript_request(&node.id).is_some() {
         actions.push(("Inspect transcript".into(), Action::Inspect(node.id.clone())));
     }
-    if app.owned_alive(&node.id) {
+    if app.owned_alive(&node.id) || app.waits_for_restore(&node.id) {
         actions.push(("Stop".into(), Action::Stop { id: node.id.clone(), force: false }));
     }
     if !app.demo && !shell {

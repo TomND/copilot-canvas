@@ -316,6 +316,9 @@ impl App {
                     self.stop_passive_run(&node.id);
                 } else if let Some(id) = self.primary().and_then(|n| self.session_of(&n.id)).filter(|id| self.owned_alive(id)) {
                     self.confirm_stop(id);
+                } else if let Some(id) = self.primary().and_then(|n| self.session_of(&n.id)).filter(|id| self.waits_for_restore(id)) {
+                    // Still waiting to be resumed after a restart: not resumed (R2-C-01).
+                    self.cancel_restore(&id);
                 }
                 return;
             }
