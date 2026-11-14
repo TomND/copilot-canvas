@@ -763,15 +763,24 @@ most 8 files and 4 MiB in all.
 Every 2 s the service writes `<home>/run/health-<instance>.json` from a thread
 of its own (`server::Health`: clients dropped whose connection thread has not
 returned, launches under way, clients whose worker is busy with one message,
-with when each began, and when the frame pump last began a pass; written to
+with when each began, when the frame pump last completed a pass and when it
+last recovered from a panic; written to
 a temporary file and renamed, so a reader never sees half of it). `service
 status` (its `wedged` list) and `doctor` (*Service health*) read it with the
 terminal list (`server::wedge_signs`): a terminal alive with no output 30 s
 after its launch, a close pending over 5 s, a launch over 30 s, a client's
-message handled for over 30 s, a frame pump that had not run for 10 s, a
-health file older than 10 s. A panic in a pass of the frame pump, or in the
-exit and change loops, is logged (the pump's at most once a minute) and the
-loop goes on; the pump asks again for the screens it was waiting for.
+message handled for over 30 s, a frame pump that had not completed a pass for
+10 s (a pass that panics every time does not count, R3-A-08), a pump panic in
+the last 30 s, a health file older than 10 s. A panic in a pass of the frame
+pump, or in the exit and change loops, is logged (the pump's at most once a
+minute) and the loop goes on; the pump asks again for the screens it was
+waiting for, and a panic while one client's frames are made skips only that
+client's tiles for the pass. A panic while a client's message is handled (on
+its worker or a launch's thread) is contained too (R3-A-03): the client gets an
+error naming the terminal, a key held behind it is not acknowledged (so it is
+sent again after a reconnection), the work held behind a launch is let go and
+the launch thread is given back, so the terminal's later messages and the
+connection's end are never held.
 `service restart [--yes]` stops the service gracefully, waits for its process
 to end and starts it through its login entry (Windows: the `Atelier-Service`
 task; macOS: `launchctl kickstart` of its LaunchAgent; Linux: `systemctl --user

@@ -393,13 +393,18 @@ pub struct Host {
     priority_wake: Sender<()>,
     bytes: Arc<AtomicU64>,
     frames: AtomicU64,
-    /// When the frame pump last began a pass (ms; for [`Health::pump_ms`]).
+    /// When the frame pump last completed a pass (ms; for [`Health::pump_ms`]).
     pump_ms: AtomicU64,
+    /// When the frame pump last recovered from a panic (ms; [`Health::pump_panic_ms`]).
+    pump_panic_ms: AtomicU64,
+    /// When a panic of the pump, and of a client's work, was last logged (ms).
+    pump_panic_logged: AtomicU64,
+    work_panic_logged: AtomicU64,
     /// A frame row too large to send was logged (once).
     frame_too_large_logged: AtomicBool,
-    /// Tests: the pump's next pass panics.
+    /// Tests: the pump's next passes panic (this many; `u32::MAX`: every one).
     #[cfg(test)]
-    pump_panic: AtomicBool,
+    pump_panic: std::sync::atomic::AtomicU32,
     last_activity: Mutex<Instant>,
     started: Instant,
     pub shutting_down: AtomicBool,
@@ -694,9 +699,12 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         bytes: Arc::new(AtomicU64::new(0)),
         frames: AtomicU64::new(0),
         pump_ms: AtomicU64::new(0),
+        pump_panic_ms: AtomicU64::new(0),
+        pump_panic_logged: AtomicU64::new(0),
+        work_panic_logged: AtomicU64::new(0),
         frame_too_large_logged: AtomicBool::new(false),
         #[cfg(test)]
-        pump_panic: AtomicBool::new(false),
+        pump_panic: std::sync::atomic::AtomicU32::new(0),
         last_activity: Mutex::new(Instant::now()),
         started: Instant::now(),
         shutting_down: AtomicBool::new(false),
@@ -1615,6 +1623,16 @@ enum Work {
 }
 
 impl Work {
+    /// What it is, for a log line or an error.
+    fn name(&self) -> String {
+        match self {
+            Work::Message(message) => format!("{message:?}").split([' ', '{', '(']).next().unwrap_or_default().to_owned(),
+            Work::Input { .. } => "input".into(),
+            Work::Leave(_) => "a hidden tile".into(),
+            Work::Connected => "the connect snapshot".into(),
+        }
+    }
+
     /// The terminal it is about, while it waits.
     fn terminal(&self) -> Option<&str> {
         match self {
@@ -1688,7 +1706,38 @@ impl Pending {
 
 /// Handles one piece of work (on the worker or a launch thread); `quiet`:
 /// an error is not sent (the input after a launch that failed: one notice).
+/// A panic in it is contained (R3-A-03): the work counts as failed (an
+/// input's number is taken back, so it is not acknowledged), the client is
+/// told which terminal it was about, and the thread goes on with the next.
 fn handle(host: &Arc<Host>, client: &Arc<Client>, work: Work, quiet: bool) -> bool {
+    let terminal = work.terminal().map(str::to_owned);
+    let what = work.name();
+    let seq = match &work {
+        Work::Input { seq, .. } => *seq,
+        _ => None,
+    };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle_work(host, client, work, quiet))) {
+        Ok(handled) => handled,
+        Err(panic) => {
+            if let (Some(seq), Some(session)) = (seq, &client.session) {
+                lock(session).refused(client.id, seq);
+            }
+            if once_a_minute(&host.work_panic_logged) {
+                log(&host.instance, &format!("client {}: {what}{} recovered from a panic: {}", client.id, terminal.as_deref().map(|t| format!(" for terminal {t}")).unwrap_or_default(), panic_text(&panic)));
+            }
+            if !quiet {
+                let message = match &terminal {
+                    Some(id) => format!("the service failed handling {what} for terminal {id} (an internal error, logged); try again"),
+                    None => format!("the service failed handling {what} (an internal error, logged); try again"),
+                };
+                client.send(ServiceMsg::Error { id: terminal, message });
+            }
+            false
+        }
+    }
+}
+
+fn handle_work(host: &Arc<Host>, client: &Arc<Client>, work: Work, quiet: bool) -> bool {
     let result = match work {
         Work::Message(message) => dispatch(host, client, message),
         Work::Input { id, input, seq } => apply_numbered(host, client, &id, &input, seq),
@@ -1747,6 +1796,9 @@ fn run_held(host: &Arc<Host>, client: &Arc<Client>, pending: &Arc<Pending>, id: 
     pending.start_thread();
     let (host, client, pending_job) = (host.clone(), client.clone(), pending.clone());
     let body = move || {
+        // Whatever happens below, the thread is given back and nothing stays
+        // held behind it (R3-A-03): a disconnect never waits for it forever.
+        let mut guard = HeldGuard { pending: pending_job.clone(), client: client.clone(), id: id.clone(), finished: false };
         if await_launch {
             let until = Instant::now() + LAUNCH_AWAIT;
             while host.is_launching(&id) && Instant::now() < until {
@@ -1775,7 +1827,7 @@ fn run_held(host: &Arc<Host>, client: &Arc<Client>, pending: &Arc<Pending>, id: 
             failed_input |= input && !handled;
             pending_job.done(Some(&id));
         }
-        pending_job.end_thread();
+        guard.finished = true;
     };
     let job = Arc::new(Mutex::new(Some(body)));
     let spawned = {
@@ -1792,6 +1844,31 @@ fn run_held(host: &Arc<Host>, client: &Arc<Client>, pending: &Arc<Pending>, id: 
         if let Some(body) = body {
             body();
         }
+    }
+}
+
+/// A launch thread's end, however it ends: its place among the launch
+/// threads is given back; when it did not finish (a panic), the work still
+/// held behind it is let go (counted done, inputs not acknowledged).
+struct HeldGuard {
+    pending: Arc<Pending>,
+    client: Arc<Client>,
+    id: String,
+    finished: bool,
+}
+
+impl Drop for HeldGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            let rest = lock(&self.pending.held).remove(&self.id).unwrap_or_default();
+            for work in rest {
+                if let (Work::Input { seq: Some(seq), .. }, Some(session)) = (&work, &self.client.session) {
+                    lock(session).refused(self.client.id, *seq);
+                }
+                self.pending.done(Some(&self.id));
+            }
+        }
+        self.pending.end_thread();
     }
 }
 
@@ -2134,10 +2211,14 @@ pub struct Health {
     /// load, a request; the client's later slow messages wait): (client, since ms).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub working: Vec<(u64, u64)>,
-    /// When the frame pump last began a pass (ms; it passes at least every
-    /// 50 ms; 0: an older service). Long ago: no terminal shows new output.
+    /// When the frame pump last completed a pass (ms; it passes at least
+    /// every 50 ms; 0: an older service). Long ago: no terminal shows new
+    /// output (a pass that panics every time does not count, R3-A-08).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub pump_ms: u64,
+    /// When the frame pump last recovered from a panic (ms; 0: never).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pump_panic_ms: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -2146,6 +2227,8 @@ fn is_zero(n: &u64) -> bool {
 
 /// The pump not having run for this long (ms, by the health file's clock) is a wedge sign.
 pub const PUMP_STUCK_MS: u64 = 10_000;
+/// A panic of the pump this recent (ms, by the health file's clock) is a wedge sign.
+pub const PUMP_PANIC_RECENT_MS: u64 = 30_000;
 
 /// How often the health file is written.
 pub const HEALTH_EVERY: Duration = Duration::from_secs(2);
@@ -2184,6 +2267,9 @@ pub fn wedge_signs(health: Option<&Health>, terms: &[crate::protocol::TermInfo],
         if health.pump_ms != 0 && health.updated_ms.saturating_sub(health.pump_ms) > PUMP_STUCK_MS {
             signs.push(format!("its frame pump had not run for {} s when the health file was written (terminals show no new output)", health.updated_ms.saturating_sub(health.pump_ms) / 1000));
         }
+        if health.pump_panic_ms != 0 && health.updated_ms.saturating_sub(health.pump_panic_ms) < PUMP_PANIC_RECENT_MS {
+            signs.push(format!("its frame pump recovered from a panic {} s before the health file was written (some tiles may not update; see the service log)", health.updated_ms.saturating_sub(health.pump_panic_ms) / 1000));
+        }
     }
     for term in terms.iter().filter(|t| t.alive && t.last_output_ms == 0 && now.saturating_sub(t.started_ms) > QUIET_AFTER_MS) {
         signs.push(format!("terminal {} (pid {}) printed nothing in the {} s since its launch", term.id, term.pid, age(term.started_ms)));
@@ -2210,6 +2296,7 @@ fn health_loop(host: Arc<Host>) {
             launching: lock(&host.launching).iter().map(|(id, since)| (id.clone(), *since)).collect(),
             working: clients.iter().filter_map(|c| Some((c.id, c.work_since.load(Ordering::Acquire))).filter(|(_, since)| *since != 0)).collect(),
             pump_ms: host.pump_ms.load(Ordering::Relaxed),
+            pump_panic_ms: host.pump_panic_ms.load(Ordering::Relaxed),
         };
         if let Ok(text) = serde_json::to_string(&health) {
             // Replaced whole: a reader never sees half a file.
@@ -2513,21 +2600,37 @@ struct Answer {
 /// focused tiles first.
 fn pump(host: Arc<Host>, wake: Receiver<()>) {
     let mut state = PumpState::default();
-    let mut logged: Option<Instant> = None;
     loop {
-        host.pump_ms.store(now_ms(), Ordering::Relaxed);
         // A panic in one pass must not end every tile's frames silently (S3-13):
-        // the pass is dropped, what it asked for is asked again.
+        // the pass is dropped, what it asked for is asked again. Only a pass
+        // that completed counts as the pump running (R3-A-08).
         let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pump_pass(&host, &wake, &mut state)));
-        if let Err(panic) = pass {
-            state = PumpState::default();
-            if logged.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
-                logged = Some(Instant::now());
-                log(&host.instance, &format!("the frame pump recovered from a panic: {}", panic_text(&panic)));
+        match pass {
+            Ok(()) => host.pump_ms.store(now_ms(), Ordering::Relaxed),
+            Err(panic) => {
+                state = PumpState::default();
+                host.pump_panicked("the frame pump", &panic);
+                std::thread::sleep(PUMP_POLL);
             }
-            std::thread::sleep(PUMP_POLL);
         }
     }
+}
+
+impl Host {
+    /// The pump recovered from a panic: noted for the health file, logged at most once a minute.
+    fn pump_panicked(&self, what: &str, panic: &Box<dyn std::any::Any + Send>) {
+        self.pump_panic_ms.store(now_ms(), Ordering::Relaxed);
+        if once_a_minute(&self.pump_panic_logged) {
+            log(&self.instance, &format!("{what} recovered from a panic: {}", panic_text(panic)));
+        }
+    }
+}
+
+/// Whether a minute passed since `slot` (ms) was last taken; takes it.
+fn once_a_minute(slot: &AtomicU64) -> bool {
+    let now = now_ms();
+    let last = slot.load(Ordering::Relaxed);
+    (last == 0 || now.saturating_sub(last) >= 60_000) && slot.compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed).is_ok()
 }
 
 /// What a panic said.
@@ -2558,7 +2661,11 @@ fn pump_pass(host: &Arc<Host>, wake: &Receiver<()>, state: &mut PumpState) {
     wait_for_work(wake, asks, due.map_or(poll, |d| d.min(poll)));
     while wake.try_recv().is_ok() {}
     #[cfg(test)]
-    if host.pump_panic.swap(false, Ordering::AcqRel) {
+    if host.pump_panic.try_update(Ordering::AcqRel, Ordering::Acquire, |n| match n {
+        0 => None,
+        u32::MAX => Some(n),
+        n => Some(n - 1),
+    }).is_ok() {
         panic!("a test made the pump panic");
     }
     let mut answers: HashMap<String, Answer> = HashMap::new();
@@ -2577,8 +2684,14 @@ fn pump_pass(host: &Arc<Host>, wake: &Receiver<()>, state: &mut PumpState) {
     let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
     for focused in [true, false] {
         for client in &clients {
-            if let Some(at) = pump_client(host, client, focused, &answers, asks, &mut wanted) {
-                *due = sooner(*due, at);
+            // One client's panic (a frame of one of its tiles) skips that client's tiles only.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pump_client(host, client, focused, &answers, asks, &mut wanted))) {
+                Ok(Some(at)) => *due = sooner(*due, at),
+                Ok(None) => {}
+                Err(panic) => {
+                    host.pump_panicked(&format!("the frame pump (client {})", client.id), &panic);
+                    *due = sooner(*due, Instant::now() + PUMP_POLL);
+                }
             }
         }
     }
@@ -3192,6 +3305,7 @@ mod tests {
             launching: vec![("slow".into(), now - 45_000), ("now".into(), now - 2_000)],
             working: vec![(31, now - 40_000), (32, now - 3_000)],
             pump_ms: now - 1_050,
+            pump_panic_ms: now - 45_000,
         };
         let signs = wedge_signs(Some(&fresh), &terms, now);
         assert_eq!(signs.len(), 4, "{signs:?}");
@@ -4009,6 +4123,67 @@ mod tests {
         let _ = host.terminal("light-t").map(|t| t.stop(true));
     }
 
+    /// A backend whose launch of "boom" panics (in `resolve_launch`, on the launch's thread).
+    struct PanicApp;
+
+    impl HostApp for PanicApp {
+        fn resolve_launch(&self, id: &str, _: LaunchKind, _: &str) -> Result<Resolved> {
+            if id == "boom" {
+                panic!("a test made the launch of {id} panic");
+            }
+            let LaunchKind::Command { program, args } = waiting_program() else { unreachable!() };
+            Ok(Resolved { program, args, env: Vec::new(), agent: false, remote: None })
+        }
+        fn client_connected(&self, _: &Arc<Client>) {}
+        fn client_disconnected(&self, _: u64) {}
+        fn message(&self, _: &Arc<Client>, _: ClientMsg) -> Result<()> {
+            Ok(())
+        }
+        fn input_noted(&self, _: &str) {}
+        fn terminals_changed(&self) {}
+        fn has_work(&self) -> bool {
+            false
+        }
+        fn remote_credential(&self, _: &str) -> Credential {
+            Credential::Refused
+        }
+    }
+
+    /// R3-A-03: a launch whose thread panics is told to the client by its
+    /// terminal, the key held behind it is not acknowledged, later work for
+    /// that terminal is handled (not held forever), and the connection ends
+    /// at once when the client goes.
+    #[test]
+    fn a_launch_that_panics_neither_wedges_its_terminal_nor_the_connection() {
+        let (host_tx, host_rx) = bounded::<Arc<Host>>(1);
+        let (instance, addr) = test_service("panic-launch", move |host| {
+            let _ = host_tx.send(host.clone());
+            Arc::new(PanicApp)
+        });
+        let host = host_rx.recv().unwrap();
+        let (rx, mut writer, closer) = test_client(&instance, addr, "panic-client");
+        writer.send(&agent_launch("boom", 80, 24)).unwrap();
+        writer.send(&ClientMsg::Input8 { id: "boom".into(), input: Input::Key { key: protocol::Key::Char('x'), mods: 0 }, seq: 1 }).unwrap();
+        writer.send(&ClientMsg::Stop { id: "boom".into(), force: false }).unwrap();
+        let error = expect(&rx, Duration::from_secs(5), "the launch's failure, by its terminal", |m| matches!(m, ServiceMsg::Error { id: Some(id), .. } if id == "boom"));
+        assert!(matches!(&error, ServiceMsg::Error { message, .. } if message.contains("Launch") && message.contains("boom")), "{error:?}");
+        assert!(!host.is_launching("boom"), "its reservation is given back");
+        // Later work for it is handled, not held forever: a resize is refused at once.
+        writer.send(&ClientMsg::Resize { id: "boom".into(), cols: 90, rows: 30 }).unwrap();
+        expect(&rx, Duration::from_secs(2), "the resize is answered", |m| matches!(m, ServiceMsg::Error { message, .. } if message.contains("no terminal boom")));
+        let beat = expect(&rx, Duration::from_secs(5), "a heartbeat", |m| matches!(m, ServiceMsg::Heartbeat { .. }));
+        assert_eq!(beat, ServiceMsg::Heartbeat { input_ack: 0 }, "the key behind the failed launch is not acknowledged");
+        // Another launch on the same connection still runs.
+        writer.send(&agent_launch("fine", 80, 24)).unwrap();
+        eventually(Duration::from_secs(5), "another launch starts", || host.terminal("fine").is_ok());
+        let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+        assert!(log.contains("recovered from a panic: a test made the launch of boom panic"), "{log}");
+        // The connection ends at once when the client goes.
+        closer.close();
+        eventually(Duration::from_secs(1), "the connection's threads are done", || lock(&host.serving).is_empty());
+        let _ = host.terminal("fine").map(|t| t.stop(true));
+    }
+
     #[test]
     fn a_listed_clients_input_session_is_never_forgotten() {
         let (instance, addr, host) = slow_service("sessions", Duration::ZERO, Duration::ZERO);
@@ -4046,17 +4221,33 @@ mod tests {
         host.launch("p", ticking_program(), &cwd, 80, 24).unwrap();
         writer.send(&ClientMsg::Subscribe8 { ids: vec!["p".into()], focused: Some("p".into()) }).unwrap();
         expect(&rx, Duration::from_secs(5), "frames of the ticking terminal", |m| matches!(m, ServiceMsg::Frame8(f) if f.id == "p"));
-        host.pump_panic.store(true, Ordering::Release);
-        eventually(Duration::from_secs(5), "the pump's next pass panics", || !host.pump_panic.load(Ordering::Acquire));
+        host.pump_panic.store(1, Ordering::Release);
+        eventually(Duration::from_secs(5), "the pump's next pass panics", || host.pump_panic.load(Ordering::Acquire) == 0);
         while rx.try_recv().is_ok() {}
         // Frames go on after the panic (S3-13).
         expect(&rx, Duration::from_secs(5), "frames after the pump's panic", |m| matches!(m, ServiceMsg::Frame8(f) if f.id == "p"));
         eventually(Duration::from_secs(5), "the panic is logged", || std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains("the frame pump recovered from a panic: a test made the pump panic"));
-        // The health file says when it last ran: just now.
+        // The health file says when it last ran (just now) and when it panicked.
         std::thread::sleep(HEALTH_EVERY + Duration::from_millis(300));
         let health = read_health(&instance).expect("the health file");
         assert!(health.pump_ms != 0 && health.updated_ms.saturating_sub(health.pump_ms) < 1_000, "{health:?}");
-        assert!(wedge_signs(Some(&health), &[], health.updated_ms).is_empty());
+        let signs = wedge_signs(Some(&health), &[], health.updated_ms);
+        assert!(signs.len() == 1 && signs[0].starts_with("its frame pump recovered from a panic"), "{signs:?}");
+        let later = Health { updated_ms: health.pump_panic_ms + PUMP_PANIC_RECENT_MS, pump_ms: health.pump_panic_ms + PUMP_PANIC_RECENT_MS, ..health.clone() };
+        assert!(wedge_signs(Some(&later), &[], later.updated_ms).is_empty(), "an old panic is no sign");
+        // A pump that panics on every pass does not look healthy (R3-A-08):
+        // it stops counting as running, and no frame goes.
+        host.pump_panic.store(u32::MAX, Ordering::Release);
+        std::thread::sleep(Duration::from_millis(300));
+        let stopped = host.pump_ms.load(Ordering::Relaxed);
+        while rx.try_recv().is_ok() {}
+        std::thread::sleep(Duration::from_millis(1_000));
+        assert_eq!(host.pump_ms.load(Ordering::Relaxed), stopped, "a pass that panics is not a pass that ran");
+        assert!(!rx.try_iter().any(|m| matches!(m, ServiceMsg::Frame8(_))), "no frame while every pass panics");
+        let health = Health { updated_ms: stopped + PUMP_STUCK_MS + 1_000, pump_ms: stopped, pump_panic_ms: host.pump_panic_ms.load(Ordering::Relaxed), ..Health::default() };
+        assert!(wedge_signs(Some(&health), &[], health.updated_ms).iter().any(|s| s.contains("had not run for")), "the pump is named");
+        host.pump_panic.store(0, Ordering::Release);
+        expect(&rx, Duration::from_secs(5), "frames once the pump runs again", |m| matches!(m, ServiceMsg::Frame8(f) if f.id == "p"));
         closer.close();
         let _ = host.terminal("p").map(|t| t.stop(true));
     }
