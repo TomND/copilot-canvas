@@ -268,13 +268,13 @@ mod tests {
         let (mut app, sent) = rig();
         app.tick_resync();
         assert_eq!(refreshes(&sent), 0);
-        app.resync.refreshed_at = Instant::now() - REFRESH_EVERY;
+        app.resync.refreshed_at = Instant::now().checked_sub(REFRESH_EVERY).unwrap_or_else(Instant::now);
         app.tick_resync();
         assert_eq!(refreshes(&sent), 1);
         app.tick_resync();
         assert_eq!(refreshes(&sent), 0);
         app.connected = false;
-        app.resync.refreshed_at = Instant::now() - REFRESH_EVERY;
+        app.resync.refreshed_at = Instant::now().checked_sub(REFRESH_EVERY).unwrap_or_else(Instant::now);
         app.tick_resync();
         assert_eq!(refreshes(&sent), 0, "not while offline");
     }

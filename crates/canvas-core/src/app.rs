@@ -664,7 +664,7 @@ impl App {
             resized_from: HashMap::new(),
             last_tracked: Vec::new(),
             stats: None,
-            stats_at: Instant::now() - Duration::from_secs(60),
+            stats_at: Instant::now().checked_sub(Duration::from_secs(60)).unwrap_or_else(Instant::now),
             heard: (0, Instant::now()),
             resync: Default::default(),
             last_input_at: HashMap::new(),
@@ -711,7 +711,7 @@ impl App {
             automations_factory_ok: false,
             automations_folder,
             tails: HashMap::new(),
-            tails_at: Instant::now() - Duration::from_secs(60),
+            tails_at: Instant::now().checked_sub(Duration::from_secs(60)).unwrap_or_else(Instant::now),
             tails_loading: false,
             right_detail: None,
             cli_busy: None,
@@ -3659,7 +3659,7 @@ mod connection_tests {
         assert!(matches!(sent.try_recv(), Ok(ClientMsg::DocOpen { .. })));
         app.on_tick();
         assert!(!sent.try_iter().any(|m| matches!(m, ClientMsg::DocOpen { .. })), "not at once");
-        app.doc_asked_at = Instant::now() - DOC_RETRY;
+        app.doc_asked_at = Instant::now().checked_sub(DOC_RETRY).unwrap_or_else(Instant::now);
         app.on_tick();
         assert!(sent.try_iter().any(|m| matches!(m, ClientMsg::DocOpen { .. })), "asked again");
         app.on_service(ServiceMsg::Doc { key: "k".into(), version: 9, json: serde_json::to_string(&reply).unwrap() });
@@ -3682,7 +3682,7 @@ mod connection_tests {
         app.doc_asked_at -= DOC_RETRY;
         app.on_tick();
         assert_eq!(sent.try_iter().filter(|m| matches!(m, ClientMsg::DocOpen { .. })).count(), 2);
-        app.doc_asked_at = Instant::now() - DOC_RETRY;
+        app.doc_asked_at = Instant::now().checked_sub(DOC_RETRY).unwrap_or_else(Instant::now);
         app.on_tick();
         assert_eq!(sent.try_iter().filter(|m| matches!(m, ClientMsg::DocOpen { .. })).count(), 0, "the next wait is longer");
         // The first answer comes; an edit goes; the second answer (made before the edit) comes.

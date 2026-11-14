@@ -238,7 +238,7 @@ impl App {
         self.notify(format!("Starting {name}…"), false);
         let label = format!("Run {name}");
         self.in_background(move |backend| backend.task_run(&name).map(|_| String::new()).map_err(|e| format!("{e:#}")), move |result| AppEvent::CliDone { label, result });
-        self.automations_at = std::time::Instant::now() - std::time::Duration::from_secs(12);
+        self.automations_at = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(12)).unwrap_or_else(std::time::Instant::now);
     }
 
     /// Enables or disables a task: the manifest (source of truth) and the task.
@@ -251,7 +251,7 @@ impl App {
             move |backend| backend.task_set_enabled(&name, &path, enabled).map(|_| String::new()).map_err(|e| format!("{e:#}")),
             move |result| AppEvent::CliDone { label, result },
         );
-        self.automations_at = std::time::Instant::now() - std::time::Duration::from_secs(13);
+        self.automations_at = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(13)).unwrap_or_else(std::time::Instant::now);
     }
 
     /// 0 manifest · 1 launcher log · 2 newest workload log · 3 status report.

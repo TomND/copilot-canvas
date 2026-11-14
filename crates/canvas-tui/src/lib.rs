@@ -233,7 +233,7 @@ pub fn run(options: Options) -> Result<()> {
         if options.perf {
             app.perf = Some(app::Perf::default());
         }
-        let mut last_draw = Instant::now() - Duration::from_secs(1);
+        let mut last_draw = Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now);
         let mut last_tick = Instant::now();
         let (frame_tx, frame_rx) = bounded::<Outgoing>(1);
         let (done_tx, done_rx) = bounded::<Presented>(4);

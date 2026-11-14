@@ -721,7 +721,7 @@ fn run(out: Sender<Out>) -> Result<(), String> {
 
 fn main_loop(state: &'static RefCell<State>, commands: Receiver<Option<Command>>) {
     let g = gtk();
-    let mut last_frame = Instant::now() - Duration::from_secs(1);
+    let mut last_frame = Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now);
     let mut next_eval = 0u64;
     loop {
         loop {

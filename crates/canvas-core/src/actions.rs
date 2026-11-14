@@ -1035,7 +1035,7 @@ impl App {
             prompt: TextInput::default(),
             git: GitState::Unknown,
             probed: String::new(),
-            folder_changed_at: Some(Instant::now() - Duration::from_secs(1)),
+            folder_changed_at: Some(Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now)),
             worktree: false,
             base: String::new(),
             new_branch: TextInput::default(),

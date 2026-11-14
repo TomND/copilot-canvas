@@ -44,7 +44,7 @@ impl App {
             self.open_new_session(None, None);
             if let Some(Modal::NewSession(dialog)) = self.modals.last_mut() {
                 dialog.folder.set(&paths[0]);
-                dialog.folder_changed_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+                dialog.folder_changed_at = Some(std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1)).unwrap_or_else(std::time::Instant::now));
             }
             return;
         }

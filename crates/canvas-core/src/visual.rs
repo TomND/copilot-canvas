@@ -1974,7 +1974,7 @@ mod tests {
         app.visual.history_at = Some(Instant::now());
         app.sync_last_used();
         assert_eq!(app.doc.node("s").unwrap().last_used_ms, None, "the summaries are still coming in");
-        app.visual.history_at = Some(Instant::now() - HISTORY_SETTLE);
+        app.visual.history_at = Some(Instant::now().checked_sub(HISTORY_SETTLE).unwrap_or_else(Instant::now));
         app.sync_last_used();
         assert_eq!(app.doc.node("s").unwrap().last_used_ms, Some(5_000), "migrated from when you last looked");
         app.select_node("s", false);

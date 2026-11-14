@@ -263,7 +263,7 @@ mod tests {
         app.render_mode = RenderMode::Gpu;
         app.view_scale = 1.0;
         app.visual.motion = Some(motion);
-        app.visual.history_at = Some(std::time::Instant::now() - Duration::from_secs(10));
+        app.visual.history_at = Some(std::time::Instant::now().checked_sub(Duration::from_secs(10)).unwrap_or_else(std::time::Instant::now));
         app.pan_quiet_until = None;
         app.set_loop("s", 900_000);
         app

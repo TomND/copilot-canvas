@@ -601,7 +601,7 @@ impl App {
     fn choose_folder(&mut self, path: String) {
         if let Some(Modal::NewSession(dialog)) = self.modals.last_mut() {
             dialog.folder.set(&path);
-            dialog.folder_changed_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+            dialog.folder_changed_at = Some(std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1)).unwrap_or_else(std::time::Instant::now));
             dialog.focus = NsField::Name;
             dialog.error = None;
         } else if let Some(Modal::Prompt(prompt)) = self.modals.last_mut() {
@@ -690,7 +690,7 @@ impl App {
             match purpose {
                 PickPurpose::RecentFolder => {
                     dialog.folder.set(&value);
-                    dialog.folder_changed_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+                    dialog.folder_changed_at = Some(std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1)).unwrap_or_else(std::time::Instant::now));
                 }
                 PickPurpose::Branch => {
                     dialog.base = value;
