@@ -254,6 +254,10 @@ pub struct App {
     pub doc_resync: bool,
     /// When the document was last asked for (asked again after [`DOC_RETRY`]).
     pub doc_asked_at: Instant,
+    /// `DocOpen`s sent on this connection and not answered yet.
+    pub docs_asked: u32,
+    /// How many times the document was asked for again without an answer.
+    pub doc_retries: u32,
     /// When local document changes started waiting to be sent.
     pub dirty_at: Option<Instant>,
     /// When view or panel changes started waiting to be written.
@@ -485,6 +489,8 @@ impl App {
             doc_request: (None, demo),
             doc_resync: false,
             doc_asked_at: Instant::now(),
+            docs_asked: 0,
+            doc_retries: 0,
             dirty_at: None,
             prefs_dirty_at: None,
             prefs,
@@ -706,18 +712,44 @@ impl App {
         self.doc_asked_at = Instant::now();
         let (path, demo) = self.doc_request.clone();
         let cwd = self.default_cwd.clone();
-        if !self.queue(ClientMsg::DocOpen { path, demo, cwd }) {
+        if self.queue(ClientMsg::DocOpen { path, demo, cwd }) {
+            self.docs_asked += 1;
+        } else {
             // Not sent (a full queue): asked again in a second.
-            self.doc_asked_at -= DOC_RETRY.saturating_sub(Duration::from_secs(1));
+            self.doc_asked_at -= self.doc_retry_wait().saturating_sub(Duration::from_secs(1));
         }
     }
 
-    /// The whole document from the service.
+    /// How long an answer to `DocOpen` is waited for before it is asked
+    /// again: [`DOC_RETRY`], twice that after a retry, and so on up to 8×
+    /// (a multi-MB canvas behind other bulk on a slow tunnel is only late).
+    fn doc_retry_wait(&self) -> Duration {
+        DOC_RETRY * 2u32.pow(self.doc_retries.min(3))
+    }
+
+    /// The whole document from the service: an answer to `DocOpen`, or sent
+    /// unasked when the service refused an edit of this client.
     fn on_doc(&mut self, key: String, version: u64, json: &str) {
+        let asked = self.docs_asked > 0;
+        self.docs_asked = self.docs_asked.saturating_sub(1);
+        // Another answer to a document asked for again (the first was only
+        // slow): nothing newer than this copy, and taking it would send the
+        // changes made since the first again, over newer ones (R2-D-09).
+        if asked && !self.doc_resync && key == self.replica.key && version <= self.replica.version {
+            return;
+        }
+        let refused = !asked && !self.doc_resync;
         self.doc_resync = false;
+        self.doc_retries = 0;
         match Opened::from_message(key, version, json) {
             Ok(opened) => {
-                self.replica.resync(&mut self.doc, opened);
+                // After a refusal the changes it was sent go (S8-05); otherwise
+                // those not confirmed are kept and sent again.
+                if refused {
+                    self.replica.resync_refused(&mut self.doc, opened);
+                } else {
+                    self.replica.resync(&mut self.doc, opened);
+                }
                 self.after_remote_change();
                 // Local changes kept on top go out now.
                 self.mark_dirty();
@@ -2381,7 +2413,8 @@ impl App {
         if self.dirty_at.is_some_and(|t| t.elapsed() >= DOC_FLUSH) {
             self.flush_doc();
         }
-        if self.doc_resync && self.connected && self.doc_asked_at.elapsed() >= DOC_RETRY {
+        if self.doc_resync && self.connected && self.doc_asked_at.elapsed() >= self.doc_retry_wait() {
+            self.doc_retries += 1;
             self.request_doc();
         }
         if self.prefs_dirty_at.is_some_and(|t| t.elapsed() >= PREFS_FLUSH) {
@@ -2894,6 +2927,41 @@ mod connection_tests {
         // Save errors from the service are shown.
         app.on_service(ServiceMsg::DocSaved { key: "k".into(), version: 9, error: Some("disk full".into()) });
         assert_eq!(app.save_error.as_deref(), Some("the service cannot save the canvas: disk full"));
+    }
+
+    #[test]
+    fn a_slow_document_asked_for_twice_sends_no_edit_twice_and_a_refused_edit_is_not_sent_again() {
+        let (conn, sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let doc = Doc { nodes: vec![node("a"), node("b")], ..Doc::default() };
+        let opened = Opened { key: "k".into(), version: 5, path: String::new(), client: 7, doc: doc.clone() };
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), opened, false, ".".into(), app_tx, None);
+        let reply = serde_json::to_string(&crate::sync::DocReply { path: "p".into(), client: 7, doc: Some(doc), error: None }).unwrap();
+        // Asked for, not there after 10 s: asked again, and later only after a longer wait.
+        app.request_doc();
+        app.doc_asked_at -= DOC_RETRY;
+        app.on_tick();
+        assert_eq!(sent.try_iter().filter(|m| matches!(m, ClientMsg::DocOpen { .. })).count(), 2);
+        app.doc_asked_at = Instant::now() - DOC_RETRY;
+        app.on_tick();
+        assert_eq!(sent.try_iter().filter(|m| matches!(m, ClientMsg::DocOpen { .. })).count(), 0, "the next wait is longer");
+        // The first answer comes; an edit goes; the second answer (made before the edit) comes.
+        app.on_service(ServiceMsg::Doc { key: "k".into(), version: 5, json: reply.clone() });
+        app.doc.node_mut("a").unwrap().x = 4;
+        app.flush_doc();
+        assert_eq!(edits(&sent).len(), 1);
+        app.on_service(ServiceMsg::Doc { key: "k".into(), version: 5, json: reply.clone() });
+        app.flush_doc();
+        assert!(edits(&sent).is_empty(), "the late copy is dropped: the edit is not sent again (R2-D-09)");
+        assert_eq!((app.replica.in_flight(), app.doc.node("a").unwrap().x), (1, 4));
+        // That edit is refused: the service sends the canvas unasked. The
+        // change goes (S8-05), and one not sent yet stays and goes alone.
+        app.doc.node_mut("b").unwrap().y = 2;
+        app.on_service(ServiceMsg::Doc { key: "k".into(), version: 5, json: reply });
+        assert_eq!((app.replica.in_flight(), app.doc.node("a").unwrap().x, app.doc.node("b").unwrap().y), (0, 0, 2));
+        app.flush_doc();
+        let resent = edits(&sent);
+        assert!(matches!(resent.as_slice(), [(5, ops)] if matches!(ops.as_slice(), [crate::sync::Op::NodeFields(n, f)] if n.id == "b" && *f == ["y"])), "{resent:?}");
     }
 
     #[test]

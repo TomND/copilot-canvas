@@ -113,6 +113,8 @@ impl App {
         self.resized_from.clear();
         self.last_tracked.clear();
         self.routing_sent.clear();
+        // What was asked on the previous connection is not answered on this one.
+        self.docs_asked = 0;
         self.resync_terms = true;
         // Launches the previous connection asked for are the service's now (a
         // restarted one resumes what it ran): never "preparing" forever.

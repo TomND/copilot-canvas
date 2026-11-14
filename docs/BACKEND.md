@@ -197,8 +197,10 @@ The client's `Replica` keeps the service's document (`synced`, at `version`),
 that document plus its own edits in flight (`shadow`), and which fields of
 which objects are in flight. For each patch:
 
-- its own (`origin` = its connection id): applied to `synced`; the oldest edit
-  in flight is confirmed;
+- its own (`origin` = its connection id) with the targets of the oldest edit
+  in flight: applied to `synced`; that edit is confirmed (an own patch that is
+  not, an edit a refusal's resync dropped and the service applied after, is
+  taken like another window's);
 - another window's: applied to `synced`, to `shadow` except fields of its own
   edits in flight, and to the working copy except fields it changed itself
   that the service has not applied yet (in flight or not sent). Those arrive
@@ -224,7 +226,12 @@ After a reconnect (or a service restart) the client opens the document again.
 `Replica::resync` takes the service's document and puts the client's own
 changes that are not known to have arrived on top; they go out with the next
 edit. While offline nothing is sent; local changes wait. A `DocOpen` whose
-`Doc` has not come 10 s later is sent again.
+`Doc` has not come 10 s later is sent again (then after 20, 40 and 80 s); an
+answer that comes after the first one was taken, no newer than this copy, is
+dropped (its changes since would otherwise go again, over newer ones). A `Doc`
+the client did not ask for is the service's answer to a refused edit:
+`Replica::resync_refused` takes it and drops the changes already sent (the
+refused one is never sent again), keeping only those not sent yet (S8-05).
 
 ### What desktop clients send since round 1 (no wire additions)
 

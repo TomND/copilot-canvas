@@ -541,7 +541,12 @@ impl Replica {
         for op in ops {
             let _ = apply(&mut self.synced, op);
         }
-        if origin == self.client {
+        // This client's own edit coming back is the oldest in flight (the same
+        // ops, so the same targets). One that is not (an edit a resync after a
+        // refusal dropped, applied by the service after that canvas was made)
+        // is taken like another window's, so this copy gets it too (S8-05).
+        let own = origin == self.client && self.inflight.front().is_some_and(|targets| *targets == ops.iter().flat_map(Op::targets).collect::<Vec<_>>());
+        if own {
             for target in self.inflight.pop_front().unwrap_or_default() {
                 if let Some(count) = self.inflight_count.get_mut(&target) {
                     *count -= 1;
@@ -654,6 +659,20 @@ impl Replica {
     /// of it and sent with the next edit.
     pub fn resync(&mut self, doc: &mut Doc, opened: Opened) {
         let local = diff(&self.synced, doc);
+        self.resync_with(doc, opened, local);
+    }
+
+    /// The whole document the service sent when it refused an edit of this
+    /// client: the changes it was sent go (the refused one is not sent
+    /// again, and again, S8-05); those not sent yet are kept on top. An edit
+    /// sent after the refused one that the service still applies comes back
+    /// as a patch this copy takes like another window's.
+    pub fn resync_refused(&mut self, doc: &mut Doc, opened: Opened) {
+        let local = diff(&self.shadow, doc);
+        self.resync_with(doc, opened, local);
+    }
+
+    fn resync_with(&mut self, doc: &mut Doc, opened: Opened, local: Vec<Op>) {
         let mut next = opened.doc.clone();
         for op in &local {
             let _ = apply(&mut next, op);
@@ -1020,6 +1039,40 @@ mod tests {
         b.send(&mut server);
         a.receive(&server);
         assert_eq!(a.doc.node("a").unwrap().x, 40);
+    }
+
+    #[test]
+    fn a_refused_edit_is_not_sent_again_and_one_sent_after_it_still_arrives() {
+        let mut server = Server::new(Doc { nodes: vec![node("a", 0), node("b", 0)], ..Doc::default() });
+        let mut a = Window::open(&server, 1);
+        // A's first edit is refused (no patch); its second, sent before A heard
+        // of that, is applied after the service made the canvas it sends back.
+        a.doc.node_mut("a").unwrap().x = 5;
+        let _refused = a.take().unwrap();
+        let refusal = server.open(1);
+        a.doc.node_mut("b").unwrap().x = 7;
+        a.send(&mut server);
+        // A change not sent yet stays.
+        a.doc.node_mut("b").unwrap().y = 3;
+        a.replica.resync_refused(&mut a.doc, refusal);
+        a.seen = server.patches.len() - 1;
+        assert_eq!(a.doc.node("a").unwrap().x, 0, "the refused change is gone, not sent again");
+        assert_eq!(a.replica.in_flight(), 0);
+        assert_eq!(a.doc.node("b").unwrap().y, 3, "a change not sent yet is kept");
+        // The second edit's patch comes back: taken as the service's, not lost here.
+        a.receive(&server);
+        assert_eq!(a.doc.node("b").unwrap().x, 7);
+        let resent = a.take().unwrap();
+        assert!(matches!(resent.as_slice(), [Op::NodeFields(n, f)] if n.id == "b" && *f == ["y"]), "only the unsent change goes: {resent:?}");
+        server.edit(1, resent);
+        a.receive(&server);
+        converged(&server, &[&a]);
+        // A plain resync (a reconnect) still keeps what was sent and not confirmed.
+        a.doc.node_mut("a").unwrap().x = 9;
+        let _lost = a.take().unwrap();
+        a.replica.resync(&mut a.doc, server.open(2));
+        assert_eq!(a.doc.node("a").unwrap().x, 9, "sent on a connection that is gone: kept and sent again");
+        assert!(a.take().is_some());
     }
 
     #[test]
